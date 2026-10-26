@@ -22,7 +22,8 @@ On macOS, GUI builds use Xcode Command Line Tools to compile the small AppKit
 icon bridge; core-only builds and other platforms do not compile it.
 
 The icon source is `assets/icon.svg`; keep its checked-in 1024×1024 RGBA export,
-`assets/icon.png`, in sync when changing the artwork. Desktop packaging creates
+`assets/icon.png`, the Windows `assets/icon.ico`, and Android adaptive vector
+resources in sync when changing the artwork. Desktop packaging creates
 all macOS ICNS resolutions from that PNG. After packaging on macOS, run
 `python3 -m unittest discover -s tests -p 'test_*.py'` and check the native About
 panel after a full application restart.
@@ -63,7 +64,11 @@ covers the union of dependencies for the seven desktop/mobile target triples
 used by release builds, conservatively including optional/build dependencies.
 Preserve the separate bundled-font licenses. Use `hdiutil` on macOS and
 `dpkg-deb` on Ubuntu to build the additional installer formats; no extra Cargo
-packaging dependencies are needed.
+packaging dependencies are needed. Windows setup uses Inno Setup 7.1.0,
+bootstrapped by `scripts/setup-inno.ps1` with the official asset's pinned SHA-256.
+For updates, check the latest stable upstream release, supported Windows versions,
+license, and compiler options; update the version, URL, and checksum together.
+Dependabot does not update this compiler pin automatically.
 
 Only maintainers publish releases. Package artifacts with the supplied scripts,
 verify SHA-256 manifests, and document signing/notarization status. Never commit

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A per-user Windows Setup.exe, built with pinned Inno Setup 7.1.0, including
+  Start menu shortcuts and registered uninstall support.
+- Android adaptive, round, and monochrome launcher icons with the project glyph
+  kept inside the circular safe zone.
+
+### Fixed
+
+- Compact toolbars keep phone actions readable, group export formats in a menu,
+  and scroll with content instead of consuming the portrait viewport.
+- Android settings respect status/navigation bars, display cutouts, the keyboard,
+  and the native footer. Close, Escape, and Android Back dismiss settings.
+- Android system appearance reaches the Rust UI and system-bar icon contrast.
+- Windows release executables use the GUI subsystem and do not open a console.
+- The map divider has a visible label and a wider drag target in both themes.
+- File-type columns retain their width while scrolling past long extensions.
+
 ## v0.1.0-alpha.2 — 2026-10-26
 
 ### Added

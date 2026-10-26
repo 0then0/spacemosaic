@@ -101,5 +101,7 @@
   "refresh_result": "Refresh view",
   "actions": "Actions",
   "export_cancelled": "Export cancelled.",
-  "provider_cycle": "Skipped a repeated provider directory to prevent a cycle."
+  "provider_cycle": "Skipped a repeated provider directory to prevent a cycle.",
+  "resize_map": "Drag to resize the map",
+  "export": "Export"
 }

@@ -366,6 +366,7 @@ impl ExplorerApp {
                         }
                     }
                     Command::Back => self.back(),
+                    Command::CloseSettings => self.settings_open = false,
                     Command::Allocated(allocated) => {
                         self.allocated = allocated;
                         self.dirty = true;
@@ -396,7 +397,6 @@ impl ExplorerApp {
                     }
                 }
             }
-            crate::mobile::focus(self.directory, self.map_group.is_some());
         }
         if let Some(result) = self.job.as_ref().and_then(scan::Job::take) {
             self.extensions = result.extensions();
@@ -471,19 +471,33 @@ impl ExplorerApp {
     fn settings(&mut self, ui: &mut egui::Ui) {
         let language = self.language;
         let t = |key| i18n::text(language, key);
-        if ui.button(t("settings")).clicked() {
+        if ui
+            .add(egui::Button::new(t("settings")).wrap_mode(egui::TextWrapMode::Extend))
+            .clicked()
+        {
             self.settings_open = !self.settings_open;
         }
     }
     fn settings_window(&mut self, context: &egui::Context) {
         let language = self.language;
         let t = |key| i18n::text(language, key);
+        let bounds = context.content_rect().shrink(8.0);
+        let mut open = self.settings_open;
+        let mut close = context.input(|i| i.key_pressed(egui::Key::Escape));
         egui::Window::new(t("settings"))
+            .constrain_to(bounds)
+            .default_pos(bounds.min + egui::vec2(8.0, 8.0))
+            .max_width(bounds.width())
+            .max_height(bounds.height())
+            .vscroll(true)
             .id(egui::Id::new("settings-window"))
-            .open(&mut self.settings_open)
+            .open(&mut open)
             .resizable(false)
             .default_width(280.0)
             .show(context, |ui| {
+                if bounds.width() < 500.0 {
+                    ui.spacing_mut().interact_size.y = 48.0;
+                }
                 ui.label(t("appearance"));
                 ui.horizontal_wrapped(|ui| {
                     for appearance in Appearance::ALL {
@@ -523,7 +537,11 @@ impl ExplorerApp {
                     ui.checkbox(&mut self.cross_filesystems, t("cross_filesystems"));
                     ui.label(t("mount_policy"));
                 }
+                if ui.button(t("close")).clicked() {
+                    close = true;
+                }
             });
+        self.settings_open = open && !close;
     }
     fn header(&mut self, ui: &mut egui::Ui) {
         let language = self.language;
@@ -544,20 +562,29 @@ impl ExplorerApp {
                 });
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button(t("choose")).clicked() {
+                    if ui
+                        .add(egui::Button::new(t("choose")).wrap_mode(egui::TextWrapMode::Extend))
+                        .clicked()
+                    {
                         self.choose();
                     }
                     if ui
                         .add_enabled(
                             (self.scope.is_some() || self.provider_scope.is_some())
                                 && self.job.is_none(),
-                            egui::Button::new(t("rescan")),
+                            egui::Button::new(t("rescan")).wrap_mode(egui::TextWrapMode::Extend),
                         )
                         .clicked()
                     {
                         self.rescan();
                     }
-                    if (self.job.is_some() || self.mobile_busy) && ui.button(t("cancel")).clicked()
+                    if (self.job.is_some() || self.mobile_busy)
+                        && ui
+                            .add(
+                                egui::Button::new(t("cancel"))
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                            )
+                            .clicked()
                     {
                         if let Some(job) = &self.job {
                             job.cancel();
@@ -569,14 +596,36 @@ impl ExplorerApp {
                         }
                     }
                     if self.result.is_some() {
-                        ui.add_enabled_ui(self.export.is_none(), |ui| {
-                            if ui.button(t("export_json")).clicked() {
-                                self.save(true);
+                        if ui.max_rect().width() < 500.0 {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                            ui.menu_button(t("export"), |ui| {
+                                for (key, json) in [("export_json", true), ("export_csv", false)] {
+                                    if ui
+                                        .add_enabled(
+                                            self.export.is_none(),
+                                            egui::Button::new(t(key)),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.save(json);
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        } else {
+                            for (key, json) in [("export_json", true), ("export_csv", false)] {
+                                if ui
+                                    .add_enabled(
+                                        self.export.is_none(),
+                                        egui::Button::new(t(key))
+                                            .wrap_mode(egui::TextWrapMode::Extend),
+                                    )
+                                    .clicked()
+                                {
+                                    self.save(json);
+                                }
                             }
-                            if ui.button(t("export_csv")).clicked() {
-                                self.save(false);
-                            }
-                        });
+                        }
                     }
                 });
             });
@@ -636,6 +685,7 @@ impl ExplorerApp {
         let language = self.language;
         let t = |key| i18n::text(language, key);
         ui.horizontal_wrapped(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             for (page, key) in [
                 (Page::Directory, "directory"),
                 (Page::Largest, "largest"),
@@ -1107,7 +1157,9 @@ impl ExplorerApp {
         use crate::bridge::Status;
         let language = self.language;
         let t = |key| i18n::text(language, key);
-        ui.label(t("mobile_scope"));
+        if self.preview.is_some() || self.mobile_busy {
+            ui.label(t("mobile_scope"));
+        }
         if self.mobile_busy {
             ui.spinner();
             ui.label(t("waiting"));
@@ -1141,6 +1193,48 @@ impl ExplorerApp {
     }
 }
 impl ExplorerApp {
+    fn extension_table(&self, ui: &mut egui::Ui) {
+        let language = self.language;
+        egui::ScrollArea::vertical()
+            .id_salt("extensions")
+            .auto_shrink([false, true])
+            .max_height(500.0)
+            .show_rows(ui, 40.0, self.extensions.len(), |ui, range| {
+                let width = (ui.available_width() - 2.0 * ui.spacing().item_spacing.x).max(0.0);
+                let columns = [width * 0.50, width * 0.28, width * 0.22];
+                for index in range {
+                    let (name, count, size) = &self.extensions[index];
+                    let values = [
+                        if name.is_empty() {
+                            i18n::text(language, "no_extension").to_owned()
+                        } else {
+                            name.clone()
+                        },
+                        measure(language, *size),
+                        i18n::counted(language, *count, "file"),
+                    ];
+                    ui.horizontal(|ui| {
+                        for column in 0..3 {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(columns[column], 40.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.set_min_width(columns[column]);
+                                    ui.set_min_height(40.0);
+                                    let text = if column == 1 {
+                                        RichText::new(&values[column]).monospace()
+                                    } else {
+                                        RichText::new(&values[column])
+                                    };
+                                    ui.add(egui::Label::new(text).truncate())
+                                        .on_hover_text(&values[column]);
+                                },
+                            );
+                        }
+                    });
+                }
+            });
+    }
     fn object_workspace(&mut self, ui: &mut egui::Ui, wide: bool) {
         let remaining = ui.clip_rect().bottom() - ui.cursor().top();
         if wide && remaining >= 360.0 {
@@ -1148,14 +1242,42 @@ impl ExplorerApp {
                 egui::vec2(ui.available_width(), remaining),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    egui::Panel::bottom("treemap-panel")
+                    let panel = egui::Panel::bottom("treemap-panel")
                         .resizable(true)
                         .default_size(remaining * 0.48)
                         .size_range(160.0..=(remaining - 140.0))
                         .show(ui, |ui| {
                             ui.set_min_height(ui.available_height());
+                            ui.add_space(12.0);
                             self.map(ui, ui.available_height(), true);
                         });
+                    let strip = egui::Rect::from_min_size(
+                        panel.response.rect.min,
+                        egui::vec2(panel.response.rect.width(), 12.0),
+                    );
+                    let painter = ui.painter();
+                    painter.rect_filled(strip, 0.0, theme::surface(ui.visuals().dark_mode));
+                    painter.hline(
+                        strip.x_range(),
+                        strip.center().y,
+                        egui::Stroke::new(2.0, theme::accent(ui.visuals().dark_mode)),
+                    );
+                    let label = i18n::text(self.language, "resize_map");
+                    let galley = painter.layout_no_wrap(
+                        label.into(),
+                        egui::FontId::proportional(10.0),
+                        ui.visuals().text_color(),
+                    );
+                    let label_rect = egui::Rect::from_center_size(
+                        strip.center(),
+                        galley.size() + egui::vec2(20.0, 0.0),
+                    );
+                    painter.rect_filled(label_rect, 3.0, theme::surface(ui.visuals().dark_mode));
+                    painter.galley(
+                        label_rect.center() - galley.size() * 0.5,
+                        galley,
+                        ui.visuals().text_color(),
+                    );
                     let tree_bounds = ui.available_rect_before_wrap();
                     ui.scope_builder(egui::UiBuilder::new().max_rect(tree_bounds), |ui| {
                         ui.set_clip_rect(tree_bounds.intersect(ui.clip_rect()));
@@ -1227,7 +1349,7 @@ impl ExplorerApp {
                     .inner_margin(egui::Margin::same(16)),
             )
             .show(ui, |ui| {
-                #[cfg(any(target_os = "android", target_os = "ios"))]
+                #[cfg(target_os = "ios")]
                 ui.set_max_height((ui.available_height() - 80.0).max(0.0));
                 let desktop = ui.available_width() >= 700.0 && ui.available_height() >= 600.0;
                 if desktop {
@@ -1235,11 +1357,20 @@ impl ExplorerApp {
                     ui.spacing_mut().button_padding.y = 5.0;
                     ui.spacing_mut().item_spacing.y = 6.0;
                 }
-                self.header(ui);
-                ui.add_space(12.0);
+                if desktop {
+                    self.header(ui);
+                    ui.add_space(12.0);
+                } else {
+                    ui.spacing_mut().interact_size.y = 48.0;
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("workspace")
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        if !desktop {
+                            self.header(ui);
+                            ui.add_space(12.0);
+                        }
                         self.summary(ui);
                         if self.result.is_some() {
                             ui.add_space(12.0);
@@ -1247,25 +1378,7 @@ impl ExplorerApp {
                             self.refresh_rows();
                             ui.add_space(12.0);
                             if self.page == Page::Extensions {
-                                let language = self.language;
-                                let t = |key| i18n::text(language, key);
-                                egui::ScrollArea::vertical()
-                                    .id_salt("extensions")
-                                    .max_height(500.0)
-                                    .show_rows(ui, 40.0, self.extensions.len(), |ui, range| {
-                                        for index in range {
-                                            let (name, count, size) = &self.extensions[index];
-                                            ui.horizontal_wrapped(|ui| {
-                                                ui.label(if name.is_empty() {
-                                                    t("no_extension")
-                                                } else {
-                                                    name
-                                                });
-                                                ui.monospace(measure(language, *size));
-                                                ui.label(i18n::counted(language, *count, "file"));
-                                            });
-                                        }
-                                    });
+                                self.extension_table(ui);
                                 ui.add_space(12.0);
                                 self.details(ui);
                             } else {
@@ -1291,6 +1404,8 @@ impl ExplorerApp {
                     });
             });
         self.settings_window(ui.ctx());
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        crate::mobile::focus(self.directory, self.map_group.is_some(), self.settings_open);
     }
 }
 // Stable colors keep the same folder or file type recognizable across navigation.
@@ -1361,6 +1476,13 @@ fn reveal(path: &Path) -> bool {
 }
 
 impl eframe::App for ExplorerApp {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.panel_fill.to_normalized_gamma_f32()
+    }
+    #[cfg(target_os = "android")]
+    fn raw_input_hook(&mut self, context: &egui::Context, input: &mut egui::RawInput) {
+        crate::android::apply_safe_area(context, input);
+    }
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         self.draw(ui);
     }
@@ -1463,6 +1585,251 @@ mod tests {
             );
         }
         frame(app, context, vec![])
+    }
+    #[test]
+    fn phone_export_buttons_do_not_turn_into_vertical_letter_columns() {
+        for language in 0..i18n::TAGS.len() {
+            let context = egui::Context::default();
+            theme::install(&context);
+            context.set_fonts(crate::fonts::definitions());
+            let mut app = fixture();
+            app.language = language;
+            for _ in 0..4 {
+                frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+            }
+            let output = frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+            for key in ["choose", "rescan", "export"] {
+                let label = i18n::text(language, key);
+                let text = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == label => Some(text),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing phone action: {language} {key}"));
+                assert_eq!(
+                    text.galley.rows.len(),
+                    1,
+                    "wrapped phone action: {language} {key}"
+                );
+                assert!(
+                    text.pos.y + text.galley.size().y < 330.0,
+                    "phone toolbar consumes the page: {language} {key}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn compact_export_menu_keeps_both_formats_available() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = fixture();
+        let size = egui::vec2(360.0, 800.0);
+        for _ in 0..4 {
+            frame_at(&mut app, &context, vec![], size);
+        }
+        let output = frame_at(&mut app, &context, vec![], size);
+        let pos = text_position(&output, "Export");
+        for pressed in [true, false] {
+            frame_at(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                size,
+            );
+        }
+        let output = frame_at(&mut app, &context, vec![], size);
+        for label in ["Export JSON", "Export CSV"] {
+            let pos = text_position(&output, label);
+            assert!(pos.x >= 0.0 && pos.x < size.x && pos.y < size.y);
+        }
+    }
+    #[test]
+    fn settings_close_stays_inside_safe_area_after_rotation_and_large_text() {
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            context.set_fonts(crate::fonts::definitions());
+            context.set_theme(appearance.preference());
+            let mut app = fixture();
+            app.language = 1;
+            app.settings_open = true;
+            for (size, top, bottom, zoom) in [
+                (egui::vec2(412.0, 915.0), 32.0, 88.0, 1.0),
+                (egui::vec2(915.0, 412.0), 24.0, 74.0, 1.0),
+                (egui::vec2(412.0, 915.0), 32.0, 88.0, 1.6),
+            ] {
+                context.set_zoom_factor(zoom);
+                let size = size / zoom;
+                let top = top / zoom;
+                let bottom = bottom / zoom;
+                for _ in 0..4 {
+                    let mut output = context.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                            safe_area_insets: Some(egui::SafeAreaInsets(egui::epaint::MarginF32 {
+                                top,
+                                bottom,
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        },
+                        |ui| app.draw(ui),
+                    );
+                    output.textures_delta.clear();
+                }
+                let window =
+                    egui::containers::AreaState::load(&context, egui::Id::new("settings-window"))
+                        .unwrap();
+                assert!(
+                    window.rect().top() >= top,
+                    "settings title is under the status bar"
+                );
+                assert!(
+                    window.rect().right() <= size.x,
+                    "settings close is off screen"
+                );
+            }
+            // Feed Escape through a real frame rather than mutating widget state.
+            frame_at(
+                &mut app,
+                &context,
+                vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+                egui::vec2(412.0, 915.0),
+            );
+            assert!(!app.settings_open);
+        }
+    }
+    #[test]
+    fn extension_columns_do_not_move_when_long_names_scroll_into_view() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = fixture();
+        app.page = Page::Extensions;
+        app.extensions = (0..200)
+            .map(|i| {
+                (
+                    if i < 12 {
+                        format!("ext{i}")
+                    } else {
+                        "long-extension-".repeat(40)
+                    },
+                    10,
+                    scan::Measure {
+                        known: 4096,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        for _ in 0..5 {
+            frame(&mut app, &context, vec![]);
+        }
+        let first = frame(&mut app, &context, vec![]);
+        let size_x = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == i18n::bytes(0, 4096) => {
+                        Some(text.pos.x)
+                    }
+                    _ => None,
+                })
+                .expect("missing extension sizes")
+        };
+        let before = size_x(&first);
+        frame(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(300.0, 450.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -900.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        for _ in 0..16 {
+            frame(&mut app, &context, vec![]);
+        }
+        let after = frame(&mut app, &context, vec![]);
+        assert!(after.shapes.iter().any(|shape| matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text().contains("long-extension-"))));
+        assert!(
+            (size_x(&after) - before).abs() < 1.0,
+            "extension size column moved while scrolling"
+        );
+    }
+    #[test]
+    fn map_divider_is_visible_and_draggable_in_both_themes() {
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            context.set_fonts(crate::fonts::definitions());
+            context.set_theme(appearance.preference());
+            let mut app = fixture();
+            for _ in 0..12 {
+                frame(&mut app, &context, vec![]);
+            }
+            let output = frame(&mut app, &context, vec![]);
+            let grip = text_position(&output, i18n::text(0, "resize_map"));
+            let state = || {
+                egui::containers::panel::PanelState::load(&context, egui::Id::new("treemap-panel"))
+                    .unwrap()
+            };
+            let before = state().size().y;
+            frame(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(grip),
+                    egui::Event::PointerButton {
+                        pos: grip,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+            frame(
+                &mut app,
+                &context,
+                vec![egui::Event::PointerMoved(grip + egui::vec2(0.0, 40.0))],
+            );
+            frame(
+                &mut app,
+                &context,
+                vec![egui::Event::PointerButton {
+                    pos: grip + egui::vec2(0.0, 40.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+            );
+            assert!(
+                (state().size().y - before).abs() > 20.0,
+                "divider drag did not resize map"
+            );
+        }
     }
     #[test]
     fn language_popup_stays_open_and_selects_a_language_in_settings() {

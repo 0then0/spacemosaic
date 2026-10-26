@@ -102,6 +102,11 @@ the ZIP and open `spacemosaic-darwin-arm64/SpaceMosaic.app`. The app is ad-hoc
 signed, without Developer ID signing or notarization. macOS may require approval
 in **System Settings → Privacy & Security** after the first launch attempt.
 
+Current [CI builds](https://github.com/0then0/spacemosaic/actions/workflows/ci.yml)
+also provide `spacemosaic-windows-amd64-setup.exe`. It installs into the current
+user's profile without administrator rights, adds a Start menu shortcut, and
+registers an uninstaller. Published alpha.2 Windows downloads remain portable.
+
 On Windows, extract the complete portable ZIP and run `spacemosaic.exe`.
 The executable has no Authenticode signature. On Ubuntu 24.04, install the DEB
 with `sudo apt install ./spacemosaic-linux-x86_64.deb`, or extract a portable
@@ -139,7 +144,15 @@ The full application is currently runtime-verified on macOS arm64 only.
 Windows, Linux, macOS, Android APK, and iOS simulator/device builds have passed
 CI. Check the latest workflow for the current commit and artifact downloads.
 
-To package a desktop build:
+To package a desktop build, use `hdiutil` on macOS, `dpkg-deb` on Ubuntu,
+and Inno Setup **7.1.0** on Windows. In PowerShell, prepare the verified compiler
+before packaging:
+
+```powershell
+. ./scripts/setup-inno.ps1
+```
+
+The script verifies the official compiler download's pinned SHA-256. Package with:
 
 ```sh
 python3 scripts/package-desktop.py
@@ -154,7 +167,8 @@ About. The running desktop window also uses the bundled project icon.
 All packages include third-party dependency notices and font licenses; macOS
 apps retain them inside the application bundle after drag-and-drop installation.
 macOS packaging uses local ad-hoc signing; it is not Developer ID signing or
-notarization. Windows packages are unsigned portable archives.
+notarization. Windows CI packages include an unsigned per-user installer and
+an unsigned portable archive.
 
 Verify downloads with `shasum -a 256 -c <manifest>` or, on Windows,
 `Get-FileHash -Algorithm SHA256 <archive>`.

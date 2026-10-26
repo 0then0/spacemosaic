@@ -175,3 +175,66 @@ pub extern "system" fn Java_dev_spacemosaic_StorageActivity_back<'local>(
     env.with_env(|_| -> Result<bool> { Ok(crate::mobile::back()) })
         .resolve::<ThrowRuntimeExAndDefault>()
 }
+
+// Insets are physical pixels relative to the NativeActivity render surface.
+static WINDOW_INSETS: Mutex<Option<crate::mobile::WindowInsets>> = Mutex::new(None);
+
+pub fn apply_safe_area(context: &eframe::egui::Context, input: &mut eframe::egui::RawInput) {
+    if let Some(insets) = *WINDOW_INSETS.lock().unwrap_or_else(|p| p.into_inner()) {
+        input.system_theme = Some(if insets.system_dark {
+            eframe::egui::Theme::Dark
+        } else {
+            eframe::egui::Theme::Light
+        });
+        let Some(surface) = current_app().and_then(|app| app.native_window()) else {
+            return;
+        };
+        let [left, top, right, bottom] = insets.margins([surface.width(), surface.height()]);
+        let scale = context.pixels_per_point().max(0.1);
+        input.safe_area_insets = Some(eframe::egui::SafeAreaInsets(
+            eframe::egui::epaint::MarginF32 {
+                left: left / scale,
+                top: top / scale,
+                right: right / scale,
+                bottom: bottom / scale,
+            },
+        ));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_spacemosaic_StorageActivity_setInsets<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JClass<'local>,
+    left: jni::sys::jint,
+    top: jni::sys::jint,
+    right: jni::sys::jint,
+    bottom: jni::sys::jint,
+    x: jni::sys::jint,
+    y: jni::sys::jint,
+    width: jni::sys::jint,
+    height: jni::sys::jint,
+    window_width: jni::sys::jint,
+    window_height: jni::sys::jint,
+    footer_top: jni::sys::jint,
+    system_dark: jni::sys::jboolean,
+) {
+    env.with_env(|_| -> Result<()> {
+        let value = Some(crate::mobile::WindowInsets {
+            system: [left.max(0), top.max(0), right.max(0), bottom.max(0)],
+            content: [x, y, width, height],
+            window: [window_width, window_height],
+            footer_top,
+            system_dark,
+        });
+        let mut previous = WINDOW_INSETS.lock().unwrap_or_else(|p| p.into_inner());
+        let changed = *previous != value;
+        *previous = value;
+        drop(previous);
+        if changed {
+            crate::bridge::wake();
+        }
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>();
+}

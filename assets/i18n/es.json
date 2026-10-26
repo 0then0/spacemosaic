@@ -101,5 +101,7 @@
   "refresh_result": "Actualizar vista",
   "actions": "Acciones",
   "export_cancelled": "Exportación cancelada.",
-  "provider_cycle": "Se omitió un directorio repetido del proveedor para evitar un ciclo."
+  "provider_cycle": "Se omitió un directorio repetido del proveedor para evitar un ciclo.",
+  "resize_map": "Arrastra para ajustar el mapa",
+  "export": "Exportar"
 }

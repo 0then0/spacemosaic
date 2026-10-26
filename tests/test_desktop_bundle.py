@@ -1,4 +1,5 @@
 """Validate the actual packaged macOS artifact, including its icon resource seal."""
+
 import json
 import pathlib
 import platform
@@ -27,7 +28,7 @@ class MacOSBundleTests(unittest.TestCase):
         offset = 8
         chunks = set()
         while offset < len(data):
-            kind, size = struct.unpack(">4sI", data[offset:offset + 8])
+            kind, size = struct.unpack(">4sI", data[offset : offset + 8])
             self.assertGreaterEqual(size, 8)
             self.assertLessEqual(offset + size, len(data))
             chunks.add(kind)
@@ -36,13 +37,31 @@ class MacOSBundleTests(unittest.TestCase):
         self.assertGreaterEqual(len(chunks), 5)
         self.assertIn(b"ic10", chunks)  # 1024px Retina representation
         with zipfile.ZipFile(ROOT / "dist" / f"{NAME}.zip") as archive:
-            archived = archive.read(f"{NAME}/SpaceMosaic.app/Contents/Resources/{icon_name}")
+            archived = archive.read(
+                f"{NAME}/SpaceMosaic.app/Contents/Resources/{icon_name}"
+            )
         self.assertEqual(archived, data)
 
     def test_bundle_identifies_the_release_version(self):
-        metadata = json.loads(subprocess.check_output(
-            ["cargo", "metadata", "--locked", "--offline", "--no-deps", "--format-version", "1"], cwd=ROOT))
-        version = next(package["version"] for package in metadata["packages"] if package["name"] == "spacemosaic")
+        metadata = json.loads(
+            subprocess.check_output(
+                [
+                    "cargo",
+                    "metadata",
+                    "--locked",
+                    "--offline",
+                    "--no-deps",
+                    "--format-version",
+                    "1",
+                ],
+                cwd=ROOT,
+            )
+        )
+        version = next(
+            package["version"]
+            for package in metadata["packages"]
+            if package["name"] == "spacemosaic"
+        )
         with (BUNDLE / "Contents/Info.plist").open("rb") as source:
             info = plistlib.load(source)
         self.assertEqual(info["CFBundleShortVersionString"], version.split("-", 1)[0])

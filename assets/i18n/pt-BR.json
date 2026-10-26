@@ -101,5 +101,7 @@
   "refresh_result": "Atualizar visualização",
   "actions": "Ações",
   "export_cancelled": "Exportação cancelada.",
-  "provider_cycle": "Uma pasta repetida do provedor foi ignorada para evitar um ciclo."
+  "provider_cycle": "Uma pasta repetida do provedor foi ignorada para evitar um ciclo.",
+  "resize_map": "Arraste para ajustar a altura do mapa",
+  "export": "Exportar"
 }

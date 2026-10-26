@@ -1,6 +1,7 @@
 * text=auto eol=lf
 *.bat text eol=crlf
 *.png binary
+*.ico binary
 *.ttf binary
 *.jar binary
 # Preserve upstream license text verbatim, including its whitespace.

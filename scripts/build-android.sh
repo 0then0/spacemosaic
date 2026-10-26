@@ -14,8 +14,11 @@ mkdir -p dist
 cp mobile/android/app/build/outputs/apk/debug/app-debug.apk dist/spacemosaic-debug.apk
 (cd dist && shasum -a 256 spacemosaic-debug.apk > android-SHA256SUMS)
 "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose dist/spacemosaic-debug.apk
-python3 - <<'CHECK_APK'
-import zipfile
+python3 - "$ANDROID_HOME/build-tools/36.0.0/aapt" <<'CHECK_APK'
+import subprocess, sys, zipfile
+badging = subprocess.check_output([sys.argv[1], "dump", "badging", "dist/spacemosaic-debug.apk"], text=True)
+application = next(line for line in badging.splitlines() if line.startswith("application:"))
+assert "ic_launcher" in application, "APK must advertise its project launcher icon"
 with zipfile.ZipFile("dist/spacemosaic-debug.apk") as package:
     assert package.testzip() is None
     for abi in ["arm64-v8a", "x86_64"]:

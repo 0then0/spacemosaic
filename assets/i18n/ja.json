@@ -101,5 +101,7 @@
   "refresh_result": "表示を更新",
   "actions": "操作",
   "export_cancelled": "エクスポートをキャンセルしました。",
-  "provider_cycle": "循環を防ぐため、重複するプロバイダのフォルダをスキップしました。"
+  "provider_cycle": "循環を防ぐため、重複するプロバイダのフォルダをスキップしました。",
+  "resize_map": "ドラッグしてマップの高さを変更",
+  "export": "エクスポート"
 }

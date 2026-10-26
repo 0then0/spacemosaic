@@ -33,6 +33,10 @@ public final class StorageActivity extends NativeActivity {
     private static native String resultPage(String request);
     private static native void exportDone(long id, int outcome);
     private static native boolean back();
+    private static native void setInsets(int left, int top, int right, int bottom,
+        int x, int y, int width, int height, int windowWidth, int windowHeight, int footerTop, boolean systemDark);
+    private android.view.WindowInsets lastInsets;
+    private Object backCallback;
     private static WeakReference<StorageActivity> current = new WeakReference<>(null);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -80,6 +84,7 @@ public final class StorageActivity extends NativeActivity {
         runOnUiThread(() -> {
             boolean changed = appearance != preference || !language.equals(tag);
             appearance = preference; language = tag;
+            applySystemAppearance();
             try { catalog = readCatalog(tag); } catch (Exception error) { /* Keep the last complete catalog. */ }
             if (launcher != null) launcher.setText(text("accessible_browser"));
             if (changed && browserDialog != null) { browserDialog.dismiss(); showBrowser(); }
@@ -111,7 +116,9 @@ public final class StorageActivity extends NativeActivity {
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             (int)(64 * getResources().getDisplayMetrics().density), Gravity.BOTTOM);
         launcher.setOnApplyWindowInsetsListener((view, insets) -> {
-            int bottom = insets.getSystemWindowInsetBottom();
+            int bottom = android.os.Build.VERSION.SDK_INT >= 30
+                ? insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout()).bottom
+                : insets.getSystemWindowInsetBottom();
             view.setPadding(view.getPaddingLeft(), view.getPaddingTop(), view.getPaddingRight(), bottom);
             ViewGroup.LayoutParams layout = view.getLayoutParams();
             layout.height = (int)(64 * getResources().getDisplayMetrics().density) + bottom;
@@ -119,6 +126,75 @@ public final class StorageActivity extends NativeActivity {
             return insets;
         });
         addContentView(launcher, params);
+        android.view.View content = findViewById(android.R.id.content);
+        content.setOnApplyWindowInsetsListener((view, insets) -> {
+            lastInsets = insets;
+            view.post(() -> reportInsets(content));
+            return insets;
+        });
+        content.addOnLayoutChangeListener((view,l,t,r,b,ol,ot,oright,ob) -> reportInsets(content));
+        launcher.addOnLayoutChangeListener((view,l,t,r,b,ol,ot,oright,ob) -> reportInsets(content));
+        content.requestApplyInsets();
+        content.post(this::applySystemAppearance);
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            backCallback = BackCallbacks.register(this);
+        }
+    }
+    // Isolate API 33 callback types so Android 8-12 can load this Activity.
+    private static final class BackCallbacks {
+        static Object register(StorageActivity activity) {
+            android.window.OnBackInvokedCallback callback = () -> { if (!back()) activity.finish(); };
+            activity.getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback);
+            return callback;
+        }
+        static void unregister(StorageActivity activity, Object callback) {
+            activity.getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(
+                (android.window.OnBackInvokedCallback)callback);
+        }
+    }
+    private void reportInsets(android.view.View content) {
+        if (lastInsets == null || content.getWidth() == 0 || content.getHeight() == 0 || launcher.getHeight() == 0) return;
+        int left,top,right,bottom;
+        int windowWidth = getWindow().getDecorView().getWidth();
+        int windowHeight = getWindow().getDecorView().getHeight();
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.graphics.Insets bars = lastInsets.getInsets(android.view.WindowInsets.Type.systemBars()
+                | android.view.WindowInsets.Type.displayCutout() | android.view.WindowInsets.Type.ime());
+            left = bars.left; top = bars.top; right = bars.right; bottom = bars.bottom;
+            android.graphics.Rect bounds = getWindowManager().getCurrentWindowMetrics().getBounds();
+            windowWidth = bounds.width(); windowHeight = bounds.height();
+        } else {
+            left = lastInsets.getSystemWindowInsetLeft(); top = lastInsets.getSystemWindowInsetTop();
+            right = lastInsets.getSystemWindowInsetRight(); bottom = lastInsets.getSystemWindowInsetBottom();
+        }
+        int[] location = new int[2]; content.getLocationInWindow(location);
+        int[] footer = new int[2]; launcher.getLocationInWindow(footer);
+        setInsets(left,top,right,bottom,location[0],location[1],content.getWidth(),content.getHeight(),
+            windowWidth,windowHeight,footer[1],
+            (getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                == android.content.res.Configuration.UI_MODE_NIGHT_YES);
+    }
+    private void applySystemAppearance() {
+        boolean dark = appearance == 2 || (appearance == 0 &&
+            (getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                == android.content.res.Configuration.UI_MODE_NIGHT_YES);
+        if (launcher != null) {
+            launcher.setTextColor(dark ? 0xFFFAF9F6 : 0xFF20201F);
+            launcher.setBackgroundTintList(android.content.res.ColorStateList.valueOf(dark ? 0xFF353534 : 0xFFE4E3DF));
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                int mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                controller.setSystemBarsAppearance(dark ? 0 : mask, mask);
+            }
+        } else {
+            android.view.View decor = getWindow().getDecorView();
+            int mask = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            decor.setSystemUiVisibility(dark ? decor.getSystemUiVisibility() & ~mask : decor.getSystemUiVisibility() | mask);
+        }
     }
     private Button button(String key, Runnable action) {
         Button button = new Button(viewContext()); button.setText(text(key)); button.setMinHeight((int)(48 * getResources().getDisplayMetrics().density));
@@ -262,6 +338,8 @@ public final class StorageActivity extends NativeActivity {
     }
     @Override public void onConfigurationChanged(android.content.res.Configuration configuration) {
         super.onConfigurationChanged(configuration);
+        applySystemAppearance();
+        reportInsets(findViewById(android.R.id.content));
         if (appearance == 0 && browserDialog != null) { browserDialog.dismiss(); showBrowser(); }
     }
     private void details(JSONObject entry) {
@@ -437,6 +515,8 @@ public final class StorageActivity extends NativeActivity {
     @Override public void onBackPressed() { if (!back()) super.onBackPressed(); }
     @Override protected void onDestroy() {
         destroyed = true;
+        if (android.os.Build.VERSION.SDK_INT >= 33 && backCallback != null)
+            BackCallbacks.unregister(this, backCallback);
         CancellationSignal signal = cancellation; if (signal != null) signal.cancel();
         handler.removeCallbacksAndMessages(null);
         if (browserDialog != null) browserDialog.dismiss();

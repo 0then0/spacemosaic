@@ -5,7 +5,10 @@ of evidence. Platform badges and release notes must not combine them.
 
 ## Current support
 
-The desktop application builds and runs on macOS arm64. Windows, macOS, Linux,
+The desktop application builds and runs on macOS arm64. Alpha.2 was also
+exercised on Windows 11 and Pixel 8 with Android 17; those reports exposed UI
+and packaging regressions. Current fixes still need revalidation on that phone
+and Windows installation. Windows, macOS, Linux,
 Android APK packaging, and iOS simulator/device builds have passed GitHub
 Actions. Consult the current workflow for each commit. Desktop runtime outside
 macOS, mobile picker/lifecycle behavior, screen readers, and physical devices
@@ -41,7 +44,9 @@ sorting, JSON/CSV export, treemap geometry, hit regions, theme selection and
 contrast, translation-key completeness, tree expansion/selection, desktop
 tree/map placement, and pointer-based language selection. Regression checks
 exercise resizing, text scaling, scroll access to the map, persistent selection
-highlights, and nested/grouped selections.
+highlights, and nested/grouped selections. Phone regressions cover toolbar
+height and complete export menus, safe-area settings after rotation/text scaling,
+stable file-type columns during scrolling, and divider dragging in both themes.
 
 Provider fixtures exercise recursive multi-page traversal, opaque URI export,
 unknown sizes, incomplete provider pages, denied children, cycles, resource
@@ -54,6 +59,10 @@ they do not substitute for native integration tests.
 Packaging tests validate portable archive contents and every manifest entry.
 macOS checks mount the read-only DMG, inspect its Applications shortcut and
 embedded notices, and verify the app's icon, resources, and code-signature seal.
+Windows checks inspect the PE GUI subsystem, silently install Setup.exe into
+a disposable directory, verify shortcuts and the uninstall entry, then uninstall
+and confirm unrelated files are preserved. Icon checks validate adaptive/round
+resource selection and the glyph's circular safe zone.
 Linux checks inspect TAR executable modes and extract the DEB into a disposable
 directory to verify paths, launcher/icon files, version ordering, and ownership.
 Android packaging verifies APK signatures and native libraries for both ABIs;

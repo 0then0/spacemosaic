@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Package desktop binaries and license notices without publishing a release."""
+
 import hashlib
 import json
+import os
 import pathlib
 import platform
 import plistlib
@@ -12,9 +14,25 @@ import tempfile
 import zipfile
 
 root = pathlib.Path(__file__).resolve().parent.parent
-metadata = json.loads(subprocess.check_output(
-    ["cargo", "metadata", "--locked", "--offline", "--no-deps", "--format-version", "1"], cwd=root))
-version = next(package["version"] for package in metadata["packages"] if package["name"] == "spacemosaic")
+metadata = json.loads(
+    subprocess.check_output(
+        [
+            "cargo",
+            "metadata",
+            "--locked",
+            "--offline",
+            "--no-deps",
+            "--format-version",
+            "1",
+        ],
+        cwd=root,
+    )
+)
+version = next(
+    package["version"]
+    for package in metadata["packages"]
+    if package["name"] == "spacemosaic"
+)
 system = platform.system().lower()
 arch = platform.machine().lower()
 dist = root / "dist"
@@ -24,7 +42,11 @@ bundle = dist / name
 if bundle.exists():
     shutil.rmtree(bundle)
 bundle.mkdir()
-executable = root / "target/release" / ("spacemosaic.exe" if system == "windows" else "spacemosaic")
+executable = (
+    root
+    / "target/release"
+    / ("spacemosaic.exe" if system == "windows" else "spacemosaic")
+)
 if system == "darwin":
     app = bundle / "SpaceMosaic.app/Contents"
     (app / "MacOS").mkdir(parents=True, exist_ok=True)
@@ -43,25 +65,62 @@ if system == "darwin":
             for scale in [1, 2]:
                 suffix = "@2x" if scale == 2 else ""
                 destination = iconset / f"icon_{size}x{size}{suffix}.png"
-                subprocess.run(["sips", "-z", str(size * scale), str(size * scale),
-                                str(root / "assets/icon.png"), "--out", str(destination)],
-                               check=True, stdout=subprocess.DEVNULL)
-        subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o",
-                        str(resources / "NSApplicationIcon.icns")], check=True)
+                subprocess.run(
+                    [
+                        "sips",
+                        "-z",
+                        str(size * scale),
+                        str(size * scale),
+                        str(root / "assets/icon.png"),
+                        "--out",
+                        str(destination),
+                    ],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                )
+        subprocess.run(
+            [
+                "iconutil",
+                "-c",
+                "icns",
+                str(iconset),
+                "-o",
+                str(resources / "NSApplicationIcon.icns"),
+            ],
+            check=True,
+        )
     with (app / "Info.plist").open("wb") as output:
-        plistlib.dump({"CFBundleIdentifier": "dev.spacemosaic.desktop",
-                      "CFBundleName": "SpaceMosaic", "CFBundleExecutable": "spacemosaic",
-                      "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version.split("-", 1)[0],
-                      "CFBundleGetInfoString": f"SpaceMosaic {version}",
-                      "CFBundleVersion": "2", "CFBundleIconFile": "NSApplicationIcon.icns",
-                      "NSHighResolutionCapable": True}, output)
+        plistlib.dump(
+            {
+                "CFBundleIdentifier": "dev.spacemosaic.desktop",
+                "CFBundleName": "SpaceMosaic",
+                "CFBundleExecutable": "spacemosaic",
+                "CFBundlePackageType": "APPL",
+                "CFBundleShortVersionString": version.split("-", 1)[0],
+                "CFBundleGetInfoString": f"SpaceMosaic {version}",
+                "CFBundleVersion": "2",
+                "CFBundleIconFile": "NSApplicationIcon.icns",
+                "NSHighResolutionCapable": True,
+            },
+            output,
+        )
 else:
     shutil.copy2(executable, bundle / executable.name)
+if system == "windows":
+    shutil.copy2(root / "assets/icon.ico", bundle / "SpaceMosaic.ico")
+    shutil.copy2(
+        root / "packaging/windows/LICENSE-InnoSetup.txt",
+        bundle / "LICENSE-InnoSetup.txt",
+    )
 shutil.copy2(root / "THIRD_PARTY_NOTICES.txt", bundle / "THIRD_PARTY_NOTICES.txt")
 for file in ["README.md", "LICENSE"]:
     shutil.copy2(root / file, bundle / file)
-shutil.copytree(root / "assets/fonts", bundle / "font-licenses", dirs_exist_ok=True,
-                ignore=shutil.ignore_patterns("*.ttf"))
+shutil.copytree(
+    root / "assets/fonts",
+    bundle / "font-licenses",
+    dirs_exist_ok=True,
+    ignore=shutil.ignore_patterns("*.ttf"),
+)
 if system == "darwin":
     licenses = resources / "licenses"
     licenses.mkdir()
@@ -85,11 +144,44 @@ if system == "darwin":
         staging = pathlib.Path(temporary) / "image"
         shutil.copytree(bundle, staging)
         (staging / "Applications").symlink_to("/Applications", target_is_directory=True)
-        subprocess.run(["hdiutil", "create", "-ov", "-fs", "HFS+", "-format", "UDZO",
-                        "-volname", f"SpaceMosaic {version}", "-srcfolder", str(staging),
-                        str(image)], check=True)
+        subprocess.run(
+            [
+                "hdiutil",
+                "create",
+                "-ov",
+                "-fs",
+                "HFS+",
+                "-format",
+                "UDZO",
+                "-volname",
+                f"SpaceMosaic {version}",
+                "-srcfolder",
+                str(staging),
+                str(image),
+            ],
+            check=True,
+        )
     subprocess.run(["hdiutil", "verify", str(image)], check=True)
     artifacts.append(image)
+elif system == "windows":
+    compiler = os.environ.get("INNO_SETUP_COMPILER")
+    if not compiler:
+        raise SystemExit(
+            "Set INNO_SETUP_COMPILER using scripts/setup-inno.ps1 (Inno Setup 7.1.0)."
+        )
+    environment = os.environ.copy()
+    environment.update(
+        SPACEMOSAIC_VERSION=version,
+        SPACEMOSAIC_BUNDLE_DIR=str(bundle),
+        SPACEMOSAIC_OUTPUT_DIR=str(dist),
+        SPACEMOSAIC_ICON=str(root / "assets/icon.ico"),
+    )
+    subprocess.run(
+        [compiler, str(root / "packaging/windows/setup.iss")],
+        env=environment,
+        check=True,
+    )
+    artifacts.append(dist / f"{name}-setup.exe")
 elif system == "linux":
     portable = dist / f"{name}.tar.gz"
     with tarfile.open(portable, "w:gz") as output:
@@ -114,7 +206,8 @@ elif system == "linux":
         (applications / "spacemosaic.desktop").write_text(
             "[Desktop Entry]\nType=Application\nName=SpaceMosaic\n"
             "Comment=Explore storage usage without changing files\n"
-            "Exec=spacemosaic\nIcon=spacemosaic\nTerminal=false\nCategories=System;Utility;\n")
+            "Exec=spacemosaic\nIcon=spacemosaic\nTerminal=false\nCategories=System;Utility;\n"
+        )
         control = package / "DEBIAN"
         control.mkdir()
         (control / "control").write_text(
@@ -125,8 +218,12 @@ elif system == "linux":
             "Depends: libc6 (>= 2.39), libgcc-s1, libstdc++6, libxkbcommon0, "
             "libxkbcommon-x11-0, libegl1, libwayland-client0, libx11-6, libxcb1, "
             "libxcursor1, libxi6, libxrandr2\n"
-            "Description: Local read-only storage explorer with an interactive treemap\n")
-        subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(package), str(deb)], check=True)
+            "Description: Local read-only storage explorer with an interactive treemap\n"
+        )
+        subprocess.run(
+            ["dpkg-deb", "--build", "--root-owner-group", str(package), str(deb)],
+            check=True,
+        )
     artifacts.append(deb)
 manifest = ""
 for artifact in artifacts:

@@ -101,5 +101,7 @@
   "refresh_result": "Actualiser la vue",
   "actions": "Actions",
   "export_cancelled": "Export annulé.",
-  "provider_cycle": "Un dossier répété du fournisseur a été ignoré pour éviter une boucle."
+  "provider_cycle": "Un dossier répété du fournisseur a été ignoré pour éviter une boucle.",
+  "resize_map": "Faire glisser pour redimensionner la carte",
+  "export": "Exporter"
 }

@@ -11,6 +11,35 @@ use std::{
     },
 };
 
+/// Physical window geometry reported by Android. The render surface can either
+/// fill the window or already exclude native decor/IME; do not subtract it twice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowInsets {
+    pub system: [i32; 4],
+    pub content: [i32; 4],
+    pub window: [i32; 2],
+    pub footer_top: i32,
+    pub system_dark: bool,
+}
+impl WindowInsets {
+    pub fn margins(self, surface: [i32; 2]) -> [f32; 4] {
+        let origin = if (surface[0] - self.content[2]).abs() <= 1
+            && (surface[1] - self.content[3]).abs() <= 1
+        {
+            [self.content[0], self.content[1]]
+        } else {
+            [0, 0]
+        };
+        [
+            (self.system[0] - origin[0]).max(0) as f32,
+            (self.system[1] - origin[1]).max(0) as f32,
+            (origin[0] + surface[0] - (self.window[0] - self.system[2])).max(0) as f32,
+            (origin[1] + surface[1] - (self.window[1] - self.system[3]).min(self.footer_top)).max(0)
+                as f32,
+        ]
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Command {
     Rescan,
@@ -19,6 +48,7 @@ pub enum Command {
     Navigate(usize),
     Select(usize),
     Back,
+    CloseSettings,
     Language(usize),
     Appearance(usize),
     Allocated(bool),
@@ -44,6 +74,7 @@ struct State {
     progress: Option<Arc<Mutex<scan::Progress>>>,
     directory: usize,
     can_back: bool,
+    settings_open: bool,
 }
 fn state() -> &'static Mutex<State> {
     static VALUE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -71,17 +102,27 @@ pub fn publish(generation: u64, result: Arc<scan::ScanResult>) {
         };
     }
 }
-pub fn focus(directory: usize, grouped: bool) {
+pub fn focus(directory: usize, grouped: bool, settings_open: bool) {
     let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
     state.directory = directory;
     state.can_back = directory != 0 || grouped;
+    state.settings_open = settings_open;
 }
 pub fn back() -> bool {
-    let (generation, can_back) = {
+    let (generation, can_back, settings_open) = {
         let state = state().lock().unwrap_or_else(|p| p.into_inner());
-        (state.generation, state.can_back)
+        (state.generation, state.can_back, state.settings_open)
     };
-    can_back && bridge::is_current(generation) && enqueue(generation, Command::Back)
+    (can_back || settings_open)
+        && bridge::is_current(generation)
+        && enqueue(
+            generation,
+            if settings_open {
+                Command::CloseSettings
+            } else {
+                Command::Back
+            },
+        )
 }
 fn enqueue(generation: u64, command: Command) -> bool {
     let mut queue = commands().lock().unwrap_or_else(|p| p.into_inner());
@@ -410,6 +451,38 @@ mod tests {
         }
     }
     #[test]
+    fn android_insets_respect_edge_to_edge_fitted_surfaces_ime_and_rotation() {
+        let full = WindowInsets {
+            system: [0, 90, 0, 60],
+            content: [0, 0, 1080, 2400],
+            window: [1080, 2400],
+            footer_top: 2172,
+            system_dark: false,
+        };
+        assert_eq!(full.margins([1080, 2400]), [0.0, 90.0, 0.0, 228.0]);
+        let fitted = WindowInsets {
+            content: [0, 90, 1080, 2250],
+            ..full
+        };
+        assert_eq!(fitted.margins([1080, 2250]), [0.0, 0.0, 0.0, 168.0]);
+        let keyboard = WindowInsets {
+            system: [0, 90, 0, 900],
+            content: [0, 0, 1080, 1500],
+            footer_top: 1332,
+            ..full
+        };
+        assert_eq!(keyboard.margins([1080, 1500]), [0.0, 90.0, 0.0, 168.0]);
+        assert_eq!(keyboard.margins([1080, 2400]), [0.0, 90.0, 0.0, 1068.0]);
+        let rotated = WindowInsets {
+            system: [90, 0, 60, 0],
+            content: [0, 0, 2400, 1080],
+            window: [2400, 1080],
+            footer_top: 912,
+            system_dark: false,
+        };
+        assert_eq!(rotated.margins([2400, 1080]), [90.0, 0.0, 60.0, 168.0]);
+    }
+    #[test]
     fn native_results_are_paged_sorted_and_filtered_without_storage_access() {
         let result = result(1000);
         let first = result_page(&result, 7, &json!({"language":"ru"}));
@@ -478,6 +551,14 @@ mod tests {
         assert_eq!(rejected["accepted"], false);
         assert!(matches!(take_command(), Some(Command::Rescan)));
         assert!(take_command().is_none());
+        focus(0, false, true);
+        assert!(
+            back(),
+            "Android Back must dismiss settings before leaving the app"
+        );
+        assert!(matches!(take_command(), Some(Command::CloseSettings)));
+        focus(0, false, false);
+        assert!(!back());
         assert_eq!(
             serde_json::from_str::<Value>(&page("{}")).unwrap()["status"],
             "scanning"

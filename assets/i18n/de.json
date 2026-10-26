@@ -101,5 +101,7 @@
   "refresh_result": "Ansicht aktualisieren",
   "actions": "Aktionen",
   "export_cancelled": "Export abgebrochen.",
-  "provider_cycle": "Ein wiederholter Anbieterordner wurde übersprungen, um einen Zyklus zu vermeiden."
+  "provider_cycle": "Ein wiederholter Anbieterordner wurde übersprungen, um einen Zyklus zu vermeiden.",
+  "resize_map": "Ziehen, um die Kartenhöhe zu ändern",
+  "export": "Exportieren"
 }
