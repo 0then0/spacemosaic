@@ -3,7 +3,7 @@
 # SpaceMosaic
 
 [![CI](https://img.shields.io/github/actions/workflow/status/0then0/spacemosaic/ci.yml?label=CI)](https://github.com/0then0/spacemosaic/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-unreleased-lightgrey)](CHANGELOG.md)
+[![Release](https://img.shields.io/github/v/release/0then0/spacemosaic?include_prereleases)](https://github.com/0then0/spacemosaic/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Verified build](https://img.shields.io/badge/verified%20build-macOS%20arm64-blue)](docs/testing.md)
 
@@ -76,6 +76,26 @@ an explicit partial result. These budgets guard stored node data, not total
 process memory. Provider cursors, filtering, font atlases, and the UI require
 additional memory. JSON exports stream to a temporary file before saving.
 
+## Download the alpha
+
+[v0.1.0-alpha.1](https://github.com/0then0/spacemosaic/releases/tag/v0.1.0-alpha.1)
+is a prerelease for **macOS on Apple Silicon (arm64)**. Download
+`spacemosaic-darwin-arm64.zip` and `SHA256SUMS` from the release, then verify:
+
+```sh
+shasum -a 256 -c SHA256SUMS
+```
+
+Extract the ZIP and open `spacemosaic-darwin-arm64/SpaceMosaic.app`.
+The app is ad-hoc signed, without Developer ID signing or notarization.
+macOS may require you to allow it in **System Settings → Privacy & Security**
+after the first launch attempt. This is an alpha; scan results are live
+observations and may be incomplete.
+
+Windows, Linux, Android, and iOS remain experimental. Their CI artifacts and
+source build instructions are available below; they are not runtime-qualified
+release downloads. See [verification status](docs/testing.md).
+
 ## Build and run
 
 Use the pinned Rust toolchain and committed `Cargo.lock`:
@@ -105,8 +125,9 @@ run `SpaceMosaic.app`, `spacemosaic.exe`, or `spacemosaic`. On Linux, restore th
 executable bit with `chmod +x spacemosaic` if the extraction tool removed it.
 macOS bundles include a multi-resolution project icon for Finder, Dock, and
 About. The running desktop window also uses the bundled project icon.
+The macOS arm64 archive includes third-party dependency notices and font licenses.
 macOS packaging uses local ad-hoc signing; it is not Developer ID signing or
-notarization. There are no published releases yet.
+notarization. The first prerelease distributes the macOS arm64 archive only.
 
 Verify downloads with `shasum -a 256 -c <manifest>` or, on Windows,
 `Get-FileHash -Algorithm SHA256 <archive>`.

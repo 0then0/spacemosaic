@@ -57,6 +57,11 @@ Major upgrades are reviewed separately. Security updates remain enabled.
 
 ## Releases
 
+Before publishing dependency updates, refresh `THIRD_PARTY_NOTICES.txt` from the
+locked crate sources and their upstream license files. The current inventory
+covers the macOS arm64 build; releases for other targets need a matching
+inventory. Preserve the separate bundled-font licenses.
+
 Only maintainers publish releases. Package artifacts with the supplied scripts,
 verify SHA-256 manifests, and document signing/notarization status. Never commit
 certificates, provisioning profiles, keystores, or credentials. Publishing a

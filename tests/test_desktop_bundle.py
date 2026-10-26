@@ -1,4 +1,5 @@
 """Validate the actual packaged macOS artifact, including its icon resource seal."""
+import json
 import pathlib
 import platform
 import plistlib
@@ -37,6 +38,19 @@ class MacOSBundleTests(unittest.TestCase):
         with zipfile.ZipFile(ROOT / "dist" / f"{NAME}.zip") as archive:
             archived = archive.read(f"{NAME}/SpaceMosaic.app/Contents/Resources/{icon_name}")
         self.assertEqual(archived, data)
+
+    def test_bundle_identifies_the_release_version(self):
+        metadata = json.loads(subprocess.check_output(
+            ["cargo", "metadata", "--locked", "--offline", "--no-deps", "--format-version", "1"], cwd=ROOT))
+        version = next(package["version"] for package in metadata["packages"] if package["name"] == "spacemosaic")
+        with (BUNDLE / "Contents/Info.plist").open("rb") as source:
+            info = plistlib.load(source)
+        self.assertEqual(info["CFBundleShortVersionString"], version.split("-", 1)[0])
+        self.assertEqual(info["CFBundleGetInfoString"], f"SpaceMosaic {version}")
+        with zipfile.ZipFile(ROOT / "dist" / f"{NAME}.zip") as archive:
+            notices = archive.read(f"{NAME}/THIRD_PARTY_NOTICES.txt").decode("utf-8")
+        self.assertIn(f"SpaceMosaic v{version}", notices)
+        self.assertIn("fastframe-i18n", notices)
 
     def test_complete_bundle_has_a_valid_resource_seal(self):
         subprocess.run(["codesign", "--verify", "--strict", str(BUNDLE)], check=True)

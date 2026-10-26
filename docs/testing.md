@@ -16,8 +16,10 @@ provider acceptance.
 Current build outcomes and downloadable artifacts are recorded in
 [GitHub Actions](https://github.com/0then0/spacemosaic/actions/workflows/ci.yml).
 
-No release is published and no mobile device support is certified. The full
-mobile acceptance criteria remain open until runtime evidence is available.
+The `v0.1.0-alpha.1` prerelease distributes macOS arm64 binaries only. No mobile
+device support is certified. The full mobile acceptance criteria remain open
+until runtime evidence is available. Other platforms remain experimental CI
+artifacts; a successful build does not qualify them for a supported release.
 
 ## Automated checks
 

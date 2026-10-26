@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.0-alpha.1 — 2026-10-26
 
 ### Added
 
@@ -48,5 +48,7 @@
 - Save cancellation remains distinct from failure; export temporary files are
   removed after completion, and JSON serialization streams to disk.
 
-No release has been published. See the platform verification documentation for
-build and runtime coverage.
+This first prerelease distributes macOS arm64 binaries with SHA-256 checksums.
+Other platforms remain experimental CI builds. Apple bundles use marketing
+version `0.1.0`, build `1`; Cargo and Android identify `0.1.0-alpha.1`.
+See the platform verification documentation for build and runtime coverage.

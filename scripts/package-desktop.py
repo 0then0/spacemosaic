@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package desktop binaries and license notices without publishing a release."""
 import hashlib
+import json
 import pathlib
 import platform
 import plistlib
@@ -10,6 +11,9 @@ import tempfile
 import zipfile
 
 root = pathlib.Path(__file__).resolve().parent.parent
+metadata = json.loads(subprocess.check_output(
+    ["cargo", "metadata", "--locked", "--offline", "--no-deps", "--format-version", "1"], cwd=root))
+version = next(package["version"] for package in metadata["packages"] if package["name"] == "spacemosaic")
 system = platform.system().lower()
 arch = platform.machine().lower()
 dist = root / "dist"
@@ -44,11 +48,14 @@ if system == "darwin":
     with (app / "Info.plist").open("wb") as output:
         plistlib.dump({"CFBundleIdentifier": "dev.spacemosaic.desktop",
                       "CFBundleName": "SpaceMosaic", "CFBundleExecutable": "spacemosaic",
-                      "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.1.0",
+                      "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version.split("-", 1)[0],
+                      "CFBundleGetInfoString": f"SpaceMosaic {version}",
                       "CFBundleVersion": "1", "CFBundleIconFile": "NSApplicationIcon.icns",
                       "NSHighResolutionCapable": True}, output)
 else:
     shutil.copy2(executable, bundle / executable.name)
+if system == "darwin" and arch == "arm64":
+    shutil.copy2(root / "THIRD_PARTY_NOTICES.txt", bundle / "THIRD_PARTY_NOTICES.txt")
 for file in ["README.md", "LICENSE"]:
     shutil.copy2(root / file, bundle / file)
 shutil.copytree(root / "assets/fonts", bundle / "font-licenses", dirs_exist_ok=True,
