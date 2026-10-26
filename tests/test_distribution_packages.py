@@ -1,4 +1,4 @@
-"""Inspect distributable artifacts without installing into the host system."""
+"""Validate packages, using disposable destinations for installation checks."""
 
 import hashlib
 import os

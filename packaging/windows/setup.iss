@@ -22,7 +22,7 @@ UninstallDisplayIcon={app}\SpaceMosaic.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-DisableProgramGroupPage=yes
+DisableProgramGroupPage=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
