@@ -47,6 +47,8 @@ class MacOSBundleTests(unittest.TestCase):
             info = plistlib.load(source)
         self.assertEqual(info["CFBundleShortVersionString"], version.split("-", 1)[0])
         self.assertEqual(info["CFBundleGetInfoString"], f"SpaceMosaic {version}")
+        apple_version = plistlib.loads((ROOT / "mobile/ios/Info.plist").read_bytes())
+        self.assertEqual(info["CFBundleVersion"], apple_version["CFBundleVersion"])
         with zipfile.ZipFile(ROOT / "dist" / f"{NAME}.zip") as archive:
             notices = archive.read(f"{NAME}/THIRD_PARTY_NOTICES.txt").decode("utf-8")
         self.assertIn(f"SpaceMosaic v{version}", notices)

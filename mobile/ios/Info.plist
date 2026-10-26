@@ -6,8 +6,8 @@
     <key>CFBundleName</key><string>SpaceMosaic</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>CFBundleGetInfoString</key><string>SpaceMosaic 0.1.0-alpha.1</string>
+    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleGetInfoString</key><string>SpaceMosaic 0.1.0-alpha.2</string>
     <key>LSRequiresIPhoneOS</key><true/>
     <key>UILaunchScreen</key><dict/>
     <key>UISupportedInterfaceOrientations</key><array>

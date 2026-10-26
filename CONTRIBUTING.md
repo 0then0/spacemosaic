@@ -59,8 +59,11 @@ Major upgrades are reviewed separately. Security updates remain enabled.
 
 Before publishing dependency updates, refresh `THIRD_PARTY_NOTICES.txt` from the
 locked crate sources and their upstream license files. The current inventory
-covers the macOS arm64 build; releases for other targets need a matching
-inventory. Preserve the separate bundled-font licenses.
+covers the union of dependencies for the seven desktop/mobile target triples
+used by release builds, conservatively including optional/build dependencies.
+Preserve the separate bundled-font licenses. Use `hdiutil` on macOS and
+`dpkg-deb` on Ubuntu to build the additional installer formats; no extra Cargo
+packaging dependencies are needed.
 
 Only maintainers publish releases. Package artifacts with the supplied scripts,
 verify SHA-256 manifests, and document signing/notarization status. Never commit

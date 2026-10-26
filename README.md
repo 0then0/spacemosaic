@@ -78,38 +78,48 @@ additional memory. JSON exports stream to a temporary file before saving.
 
 ## Download the alpha
 
-[v0.1.0-alpha.1](https://github.com/0then0/spacemosaic/releases/tag/v0.1.0-alpha.1)
-is a prerelease for **macOS on Apple Silicon (arm64)**. Builds for the other
-platforms are available for experimental testing from the same commit.
+[v0.1.0-alpha.2](https://github.com/0then0/spacemosaic/releases/tag/v0.1.0-alpha.2)
+provides downloads for all five platforms. macOS arm64 has runtime verification;
+the other platform builds remain experimental.
 
 | Platform | Architecture | Download | Status |
 | --- | --- | --- | --- |
-| Windows | x86-64 | [![Download Windows ZIP from CI](https://img.shields.io/badge/CI%20ZIP-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDFoMTB2MTBIMXpNMTMgMWgxMHYxMEgxM3pNMSAxM2gxMHYxMEgxek0xMyAxM2gxMHYxMEgxM3oiLz48L3N2Zz4%3D&logoColor=white)](https://github.com/0then0/spacemosaic/actions/runs/40385563062/artifacts/12680876809) | Experimental |
-| macOS | Apple Silicon (arm64) | [![Download macOS arm64 release ZIP](https://img.shields.io/badge/ZIP-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.1/spacemosaic-darwin-arm64.zip) | Alpha prerelease |
-| Linux | x86-64 | [![Download Linux ZIP from CI](https://img.shields.io/badge/CI%20ZIP-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/actions/runs/40385563062/artifacts/12681241280) | Experimental |
-| Android 8.0+ | arm64-v8a / x86_64 | [![Download Android debug APK bundle from CI](https://img.shields.io/badge/Debug%20APK-3DDC84?style=for-the-badge&logo=android&logoColor=black)](https://github.com/0then0/spacemosaic/actions/runs/40385563062/artifacts/12681446638) | Experimental · debug signed |
-| iOS 16+ | arm64 · device and simulator | [![Download iOS simulator and unsigned device builds from CI](https://img.shields.io/badge/CI%20builds-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/actions/runs/40385563062/artifacts/12680601886) | Experimental · device signing required |
+| Windows | x86-64 | [![Download Windows portable ZIP](https://img.shields.io/badge/Portable%20ZIP-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDFoMTB2MTBIMXpNMTMgMWgxMHYxMEgxM3pNMSAxM2gxMHYxMEgxek0xMyAxM2gxMHYxMEgxM3oiLz48L3N2Zz4%3D&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-windows-amd64.zip) | Experimental · unsigned |
+| macOS | Apple Silicon (arm64) | [![Download macOS DMG](https://img.shields.io/badge/DMG-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-darwin-arm64.dmg) [![Download macOS ZIP](https://img.shields.io/badge/ZIP-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-darwin-arm64.zip) | Alpha · ad-hoc signed |
+| Linux | x86-64 · Ubuntu 24.04 build | [![Download Linux DEB](https://img.shields.io/badge/DEB-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-linux-x86_64.deb) [![Download Linux portable TAR.GZ](https://img.shields.io/badge/Portable%20TAR.GZ-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-linux-x86_64.tar.gz) [![Download Linux ZIP](https://img.shields.io/badge/ZIP-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-linux-x86_64.zip) | Experimental |
+| Android 8.0+ | arm64-v8a / x86_64 | [![Download Android test APK](https://img.shields.io/badge/Test%20APK-3DDC84?style=for-the-badge&logo=android&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-debug.apk) | Experimental · debug signed |
+| iOS 16+ | arm64 · device and simulator | [![Download unsigned iOS device build](https://img.shields.io/badge/Device%20%C2%B7%20signing%20required-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-device.zip) [![Download iOS simulator app](https://img.shields.io/badge/Simulator-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-simulator.zip) | Experimental · device signing required |
 
-For the macOS release ZIP, download [SHA256SUMS](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.1/SHA256SUMS)
-into the same directory and verify:
+For any release download, save [SHA256SUMS](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/SHA256SUMS)
+into the same directory. Verify only the files you downloaded:
 
 ```sh
-shasum -a 256 -c SHA256SUMS
+shasum -a 256 -c --ignore-missing SHA256SUMS
 ```
 
-Extract the ZIP and open `spacemosaic-darwin-arm64/SpaceMosaic.app`.
-The app is ad-hoc signed, without Developer ID signing or notarization.
-macOS may require you to allow it in **System Settings → Privacy & Security**
-after the first launch attempt. This is an alpha; scan results are live
-observations and may be incomplete.
+On macOS, open the DMG and drag `SpaceMosaic.app` to **Applications**, or extract
+the ZIP and open `spacemosaic-darwin-arm64/SpaceMosaic.app`. The app is ad-hoc
+signed, without Developer ID signing or notarization. macOS may require approval
+in **System Settings → Privacy & Security** after the first launch attempt.
 
-Experimental buttons download GitHub Actions artifact bundles, which require
-signing in to GitHub and expire with artifact retention. Each bundle contains
-its build's SHA-256 manifest. They are not runtime-qualified release downloads.
-The iOS bundle includes a simulator app and an unsigned device app; installing
-on an iPhone requires provisioning and signing in Xcode. See
-[mobile build instructions](#mobile-development) and
-[verification status](docs/testing.md).
+On Windows, extract the complete portable ZIP and run `spacemosaic.exe`.
+The executable has no Authenticode signature. On Ubuntu 24.04, install the DEB
+with `sudo apt install ./spacemosaic-linux-x86_64.deb`, or extract a portable
+archive and run `spacemosaic`. Portable Linux builds still require compatible
+system libraries; the DEB declares their package dependencies.
+
+The Android APK can be installed with the system package installer or `adb
+install`. It uses a debug signing key. Signatures can differ between CI runs,
+so in-place updates from earlier test builds are not guaranteed.
+
+The iOS device ZIP contains an **unsigned app**, not an installable IPA. Physical
+iPhones require provisioning and signing in Xcode. The simulator ZIP is only
+for an Apple Silicon iOS simulator. The complete Xcode project and Rust sources
+are available in the release's source archives. See [mobile build instructions](#mobile-development).
+
+All downloads are attached directly to the release; they do not depend on CI
+artifact retention. Build validation does not establish runtime support.
+See [verification status](docs/testing.md).
 
 ## Build and run
 
@@ -135,14 +145,16 @@ To package a desktop build:
 python3 scripts/package-desktop.py
 ```
 
-The script creates a ZIP and SHA-256 manifest in `dist/`. Extract the archive and
+The script creates a portable ZIP and SHA-256 manifest in `dist/`, plus a macOS
+DMG or Linux TAR.GZ and DEB on the corresponding host. Extract the archive and
 run `SpaceMosaic.app`, `spacemosaic.exe`, or `spacemosaic`. On Linux, restore the
 executable bit with `chmod +x spacemosaic` if the extraction tool removed it.
 macOS bundles include a multi-resolution project icon for Finder, Dock, and
 About. The running desktop window also uses the bundled project icon.
-The macOS arm64 archive includes third-party dependency notices and font licenses.
+All packages include third-party dependency notices and font licenses; macOS
+apps retain them inside the application bundle after drag-and-drop installation.
 macOS packaging uses local ad-hoc signing; it is not Developer ID signing or
-notarization. The first prerelease distributes the macOS arm64 archive only.
+notarization. Windows packages are unsigned portable archives.
 
 Verify downloads with `shasum -a 256 -c <manifest>` or, on Windows,
 `Get-FileHash -Algorithm SHA256 <archive>`.

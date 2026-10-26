@@ -16,10 +16,11 @@ provider acceptance.
 Current build outcomes and downloadable artifacts are recorded in
 [GitHub Actions](https://github.com/0then0/spacemosaic/actions/workflows/ci.yml).
 
-The `v0.1.0-alpha.1` prerelease distributes macOS arm64 binaries only. No mobile
-device support is certified. The full mobile acceptance criteria remain open
-until runtime evidence is available. Other platforms remain experimental CI
-artifacts; a successful build does not qualify them for a supported release.
+The `v0.1.0-alpha.2` prerelease distributes builds for all five platforms.
+macOS arm64 is runtime-verified; Windows, Linux, Android, and iOS downloads remain
+experimental. No mobile device support is certified. The full mobile acceptance
+criteria remain open until runtime evidence is available. A published artifact
+or successful build does not establish runtime qualification.
 
 ## Automated checks
 
@@ -50,8 +51,14 @@ byte limits, filename search independent of URI syntax, stale commands, and
 save cancellation/temporary-file cleanup. These tests use synthetic transports;
 they do not substitute for native integration tests.
 
-Packaging tests on
-macOS validate the bundle icon, archived resources, and code-signature seal. Invalid UTF-8 filesystem names are
+Packaging tests validate portable archive contents and every manifest entry.
+macOS checks mount the read-only DMG, inspect its Applications shortcut and
+embedded notices, and verify the app's icon, resources, and code-signature seal.
+Linux checks inspect TAR executable modes and extract the DEB into a disposable
+directory to verify paths, launcher/icon files, version ordering, and ownership.
+Android packaging verifies APK signatures and native libraries for both ABIs;
+iOS packaging checks version metadata and license resources. These are package
+checks, not proof that the application launches on a device. Invalid UTF-8 filesystem names are
 tested on Linux; macOS filesystems may reject creation of such names.
 
 `cargo test` does not validate real provider behavior, operating-system dialogs,

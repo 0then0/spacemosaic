@@ -35,6 +35,9 @@ jobs:
           name: desktop-${{ matrix.os }}
           path: |
             dist/*.zip
+            dist/*.dmg
+            dist/*.deb
+            dist/*.tar.gz
             dist/*SHA256SUMS
           if-no-files-found: error
 

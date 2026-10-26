@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.1.0-alpha.2 — 2026-10-26
+
+### Added
+
+- Direct release downloads for Windows, macOS, Linux, Android, and iOS, with
+  shared SHA-256 checksums and explicit signing/runtime status.
+- A macOS DMG with an Applications shortcut and Linux DEB/TAR.GZ packages,
+  alongside portable ZIPs, an installable Android test APK, and separate iOS
+  simulator and unsigned device archives.
+- Packaging checks for disk-image contents, executable permissions, Debian
+  installation paths and ownership, APK signatures, and bundled licenses.
+
+### Changed
+
+- Updated package versions to `0.1.0-alpha.2`; Apple bundles use `0.1.0`, build `2`.
+- Included dependency notices for all target platforms and retained notices
+  inside installed macOS/iOS apps and Android assets.
+- Kept non-macOS runtime support experimental; publishing a build does not
+  imply device or screen-reader qualification.
+
 ## v0.1.0-alpha.1 — 2026-10-26
 
 ### Added

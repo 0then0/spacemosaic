@@ -14,6 +14,20 @@ xcodebuild -project mobile/ios/SpaceMosaic.xcodeproj -scheme SpaceMosaic \
   -configuration Release -sdk "$sdk" -destination "generic/platform=iOS$([ "$destination" = simulator ] && echo ' Simulator' || true)" \
   -derivedDataPath "dist/ios-$destination" \
   "RUST_LIBRARY_DIR=$PWD/target/$triple/release" CODE_SIGNING_ALLOWED=NO build
+application="dist/ios-$destination/Build/Products/Release-$sdk/SpaceMosaic.app"
+mkdir -p "$application/licenses"
+cp LICENSE THIRD_PARTY_NOTICES.txt "$application/licenses/"
+cp assets/fonts/*.txt "$application/licenses/"
+python3 - "$application" <<'CHECK_IOS'
+import pathlib, plistlib, sys
+app = pathlib.Path(sys.argv[1])
+with (app / "Info.plist").open("rb") as source:
+    info = plistlib.load(source)
+assert info["CFBundleGetInfoString"] == "SpaceMosaic 0.1.0-alpha.2"
+assert info["CFBundleVersion"] == "2"
+assert b"SpaceMosaic v0.1.0-alpha.2" in (app / "licenses/THIRD_PARTY_NOTICES.txt").read_bytes()
+assert (app / "THIRD_PARTY_NOTICES.txt").read_bytes() == pathlib.Path("THIRD_PARTY_NOTICES.txt").read_bytes()
+CHECK_IOS
 mkdir -p dist
 ditto -c -k --keepParent "dist/ios-$destination/Build/Products/Release-$sdk/SpaceMosaic.app" "dist/spacemosaic-$destination.zip"
 (cd dist && shasum -a 256 "spacemosaic-$destination.zip" > "ios-$destination-SHA256SUMS")

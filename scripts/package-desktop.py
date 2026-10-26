@@ -7,6 +7,7 @@ import platform
 import plistlib
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import zipfile
 
@@ -20,7 +21,9 @@ dist = root / "dist"
 dist.mkdir(exist_ok=True)
 name = f"spacemosaic-{system}-{arch}"
 bundle = dist / name
-bundle.mkdir(exist_ok=True)
+if bundle.exists():
+    shutil.rmtree(bundle)
+bundle.mkdir()
 executable = root / "target/release" / ("spacemosaic.exe" if system == "windows" else "spacemosaic")
 if system == "darwin":
     app = bundle / "SpaceMosaic.app/Contents"
@@ -50,17 +53,21 @@ if system == "darwin":
                       "CFBundleName": "SpaceMosaic", "CFBundleExecutable": "spacemosaic",
                       "CFBundlePackageType": "APPL", "CFBundleShortVersionString": version.split("-", 1)[0],
                       "CFBundleGetInfoString": f"SpaceMosaic {version}",
-                      "CFBundleVersion": "1", "CFBundleIconFile": "NSApplicationIcon.icns",
+                      "CFBundleVersion": "2", "CFBundleIconFile": "NSApplicationIcon.icns",
                       "NSHighResolutionCapable": True}, output)
 else:
     shutil.copy2(executable, bundle / executable.name)
-if system == "darwin" and arch == "arm64":
-    shutil.copy2(root / "THIRD_PARTY_NOTICES.txt", bundle / "THIRD_PARTY_NOTICES.txt")
+shutil.copy2(root / "THIRD_PARTY_NOTICES.txt", bundle / "THIRD_PARTY_NOTICES.txt")
 for file in ["README.md", "LICENSE"]:
     shutil.copy2(root / file, bundle / file)
 shutil.copytree(root / "assets/fonts", bundle / "font-licenses", dirs_exist_ok=True,
                 ignore=shutil.ignore_patterns("*.ttf"))
 if system == "darwin":
+    licenses = resources / "licenses"
+    licenses.mkdir()
+    for file in ["LICENSE", "THIRD_PARTY_NOTICES.txt"]:
+        shutil.copy2(root / file, licenses / file)
+    shutil.copytree(bundle / "font-licenses", licenses / "fonts")
     # Seal the complete bundle; rustc's executable-only ad-hoc signature has no resource seal.
     # '-' is local ad-hoc signing, with no certificate, identity or provisioning access.
     application = bundle / "SpaceMosaic.app"
@@ -71,6 +78,59 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
     for file in sorted(bundle.rglob("*")):
         if file.is_file():
             output.write(file, file.relative_to(dist))
-digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-(dist / f"{name}-SHA256SUMS").write_text(f"{digest}  {archive.name}\n")
-print(archive)
+artifacts = [archive]
+if system == "darwin":
+    image = dist / f"{name}.dmg"
+    with tempfile.TemporaryDirectory(prefix="spacemosaic-dmg-") as temporary:
+        staging = pathlib.Path(temporary) / "image"
+        shutil.copytree(bundle, staging)
+        (staging / "Applications").symlink_to("/Applications", target_is_directory=True)
+        subprocess.run(["hdiutil", "create", "-ov", "-fs", "HFS+", "-format", "UDZO",
+                        "-volname", f"SpaceMosaic {version}", "-srcfolder", str(staging),
+                        str(image)], check=True)
+    subprocess.run(["hdiutil", "verify", str(image)], check=True)
+    artifacts.append(image)
+elif system == "linux":
+    portable = dist / f"{name}.tar.gz"
+    with tarfile.open(portable, "w:gz") as output:
+        output.add(bundle, arcname=name)
+    artifacts.append(portable)
+    deb = dist / f"{name}.deb"
+    deb_arch = {"x86_64": "amd64", "aarch64": "arm64"}[arch]
+    with tempfile.TemporaryDirectory(prefix="spacemosaic-deb-") as temporary:
+        package = pathlib.Path(temporary) / "package"
+        binary = package / "usr/bin"
+        binary.mkdir(parents=True)
+        shutil.copy2(executable, binary / "spacemosaic")
+        docs = package / "usr/share/doc/spacemosaic"
+        shutil.copytree(bundle / "font-licenses", docs / "font-licenses")
+        for file in ["README.md", "LICENSE", "THIRD_PARTY_NOTICES.txt"]:
+            shutil.copy2(root / file, docs / file)
+        icon = package / "usr/share/icons/hicolor/scalable/apps"
+        icon.mkdir(parents=True)
+        shutil.copy2(root / "assets/icon.svg", icon / "spacemosaic.svg")
+        applications = package / "usr/share/applications"
+        applications.mkdir(parents=True)
+        (applications / "spacemosaic.desktop").write_text(
+            "[Desktop Entry]\nType=Application\nName=SpaceMosaic\n"
+            "Comment=Explore storage usage without changing files\n"
+            "Exec=spacemosaic\nIcon=spacemosaic\nTerminal=false\nCategories=System;Utility;\n")
+        control = package / "DEBIAN"
+        control.mkdir()
+        (control / "control").write_text(
+            f"Package: spacemosaic\nVersion: {version.replace('-', '~', 1)}\n"
+            f"Architecture: {deb_arch}\nSection: utils\nPriority: optional\n"
+            "Maintainer: SpaceMosaic contributors <195298332+0then0@users.noreply.github.com>\n"
+            "Homepage: https://github.com/0then0/spacemosaic\n"
+            "Depends: libc6 (>= 2.39), libgcc-s1, libstdc++6, libxkbcommon0, "
+            "libxkbcommon-x11-0, libegl1, libwayland-client0, libx11-6, libxcb1, "
+            "libxcursor1, libxi6, libxrandr2\n"
+            "Description: Local read-only storage explorer with an interactive treemap\n")
+        subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(package), str(deb)], check=True)
+    artifacts.append(deb)
+manifest = ""
+for artifact in artifacts:
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    manifest += f"{digest}  {artifact.name}\n"
+    print(artifact)
+(dist / f"{name}-SHA256SUMS").write_text(manifest)
