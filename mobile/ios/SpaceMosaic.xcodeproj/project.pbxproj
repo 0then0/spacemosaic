@@ -1,0 +1,29 @@
+// !$*UTF8*$!
+{ archiveVersion = 1; classes = {}; objectVersion = 56; objects = {
+000000000000000000000017 = { isa = PBXFileReference; lastKnownFileType = folder; path = ../../assets/i18n; sourceTree = "<group>"; };
+000000000000000000000018 = { isa = PBXBuildFile; fileRef = 000000000000000000000017; };
+
+000000000000000000000014 = { isa = PBXFileReference; lastKnownFileType = text; path = ../../assets/fonts/OFL.txt; sourceTree = "<group>"; };
+000000000000000000000015 = { isa = PBXBuildFile; fileRef = 000000000000000000000014; };
+000000000000000000000016 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000015, 000000000000000000000018); runOnlyForDeploymentPostprocessing = 0; };
+
+000000000000000000000001 = { isa = PBXProject; attributes = { LastUpgradeCheck = 2600; }; buildConfigurationList = 000000000000000000000006; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; knownRegions = (en, Base); mainGroup = 000000000000000000000002; productRefGroup = 000000000000000000000003; projectDirPath = ""; targets = (000000000000000000000004); };
+000000000000000000000002 = { isa = PBXGroup; children = (000000000000000000000017, 000000000000000000000014, 00000000000000000000000D, 00000000000000000000000E, 00000000000000000000000F, 000000000000000000000010, 000000000000000000000003); sourceTree = "<group>"; };
+000000000000000000000003 = { isa = PBXGroup; children = (000000000000000000000011); name = Products; sourceTree = "<group>"; };
+000000000000000000000004 = { isa = PBXNativeTarget; buildConfigurationList = 000000000000000000000005; buildPhases = (00000000000000000000000B, 00000000000000000000000C, 000000000000000000000016); buildRules = (); dependencies = (); name = SpaceMosaic; productName = SpaceMosaic; productReference = 000000000000000000000011; productType = "com.apple.product-type.application"; };
+00000000000000000000000D = { isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
+00000000000000000000000E = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageBridge.swift; sourceTree = "<group>"; };
+00000000000000000000000F = { isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Bridge.h; sourceTree = "<group>"; };
+000000000000000000000010 = { isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+000000000000000000000011 = { isa = PBXFileReference; lastKnownFileType = wrapper.application; path = SpaceMosaic.app; sourceTree = BUILT_PRODUCTS_DIR; };
+000000000000000000000012 = { isa = PBXBuildFile; fileRef = 00000000000000000000000D; };
+000000000000000000000013 = { isa = PBXBuildFile; fileRef = 00000000000000000000000E; };
+00000000000000000000000B = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000012, 000000000000000000000013); runOnlyForDeploymentPostprocessing = 0; };
+00000000000000000000000C = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+000000000000000000000005 = { isa = XCConfigurationList; buildConfigurations = (000000000000000000000007, 000000000000000000000008); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+000000000000000000000006 = { isa = XCConfigurationList; buildConfigurations = (000000000000000000000009, 00000000000000000000000A); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+000000000000000000000007 = { isa = XCBuildConfiguration; name = Debug; buildSettings = { PRODUCT_NAME = SpaceMosaic; PRODUCT_BUNDLE_IDENTIFIER = dev.spacemosaic; INFOPLIST_FILE = Info.plist; SWIFT_OBJC_BRIDGING_HEADER = Bridge.h; SWIFT_VERSION = 5.0; IPHONEOS_DEPLOYMENT_TARGET = 16.0; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; TARGETED_DEVICE_FAMILY = "1,2"; ARCHS = arm64; CODE_SIGN_STYLE = Automatic; ENABLE_USER_SCRIPT_SANDBOXING = YES; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; "RUST_LIBRARY_DIR[sdk=iphoneos*]" = "$(SRCROOT)/../../target/aarch64-apple-ios/release"; "RUST_LIBRARY_DIR[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release"; LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(RUST_LIBRARY_DIR)"); OTHER_LDFLAGS = ("$(inherited)", "$(RUST_LIBRARY_DIR)/libspacemosaic.a", "-lc++", "-liconv", "-framework", UIKit, "-framework", Foundation, "-framework", CoreFoundation, "-framework", Metal, "-framework", QuartzCore, "-framework", CoreGraphics, "-framework", Security, "-framework", SystemConfiguration); }; };
+000000000000000000000008 = { isa = XCBuildConfiguration; name = Release; buildSettings = { PRODUCT_NAME = SpaceMosaic; PRODUCT_BUNDLE_IDENTIFIER = dev.spacemosaic; INFOPLIST_FILE = Info.plist; SWIFT_OBJC_BRIDGING_HEADER = Bridge.h; SWIFT_VERSION = 5.0; IPHONEOS_DEPLOYMENT_TARGET = 16.0; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; TARGETED_DEVICE_FAMILY = "1,2"; ARCHS = arm64; CODE_SIGN_STYLE = Automatic; ENABLE_USER_SCRIPT_SANDBOXING = YES; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; "RUST_LIBRARY_DIR[sdk=iphoneos*]" = "$(SRCROOT)/../../target/aarch64-apple-ios/release"; "RUST_LIBRARY_DIR[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release"; LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(RUST_LIBRARY_DIR)"); OTHER_LDFLAGS = ("$(inherited)", "$(RUST_LIBRARY_DIR)/libspacemosaic.a", "-lc++", "-liconv", "-framework", UIKit, "-framework", Foundation, "-framework", CoreFoundation, "-framework", Metal, "-framework", QuartzCore, "-framework", CoreGraphics, "-framework", Security, "-framework", SystemConfiguration); }; };
+000000000000000000000009 = { isa = XCBuildConfiguration; name = Debug; buildSettings = { }; };
+00000000000000000000000A = { isa = XCBuildConfiguration; name = Release; buildSettings = { }; };
+}; rootObject = 000000000000000000000001; }

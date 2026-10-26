@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.ttf binary
+*.jar binary
+# Preserve upstream license text verbatim, including its whitespace.
+assets/fonts/OFL.txt -whitespace
+mobile/android/app/src/main/assets/licenses/NotoSansJP-OFL.txt -whitespace

@@ -1,0 +1,22 @@
+name: Bug report
+description: Report a reproducible problem
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit/version, OS, architecture, device or simulator, and interface language.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction and expected behavior
+      description: Use a disposable folder. Include actual behavior without private paths or file names.
+    validations:
+      required: true
+  - type: textarea
+    id: provider
+    attributes:
+      label: Storage provider and permissions
+      description: Local/cloud storage, offline state, and whether access was revoked.

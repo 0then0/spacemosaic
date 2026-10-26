@@ -1,0 +1,49 @@
+[package]
+name = "spacemosaic"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+publish = false
+repository = "https://github.com/0then0/spacemosaic"
+readme = "README.md"
+keywords = ["disk-usage", "treemap", "storage", "egui"]
+categories = ["filesystem", "visualization"]
+description = "A local, read-only storage explorer with an interactive treemap"
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "spacemosaic"
+required-features = ["gui"]
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe", "dep:rfd"]
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.154"
+# Language negotiation only. No shell, tray, system-font discovery or updater.
+fastframe-i18n = { git = "https://github.com/crmne/fastframe", rev = "2b04c0eed57e450461a5bef61fdebc93ed7d7226" }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+eframe = { version = "=0.36.2", optional = true, default-features = false, features = ["default_fonts", "glow", "accesskit", "wayland", "x11"] }
+rfd = { version = "=0.17.2", optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "=0.36.2", optional = true, default-features = false, features = ["default_fonts", "wgpu", "android-native-activity"] }
+winit = { version = "=0.30.13", default-features = false, features = ["android-native-activity"] }
+jni = "=0.21.1"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+eframe = { version = "=0.36.2", optional = true, default-features = false, features = ["default_fonts", "wgpu"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"

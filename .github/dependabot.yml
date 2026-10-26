@@ -1,0 +1,33 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    groups:
+      egui-family:
+        patterns: [egui, 'egui-*', 'egui_*', eframe, epaint, emath, ecolor, 'fastframe-*']
+        update-types: [minor, patch]
+      rust-compatible:
+        patterns: ['*']
+        exclude-patterns: [egui, 'egui-*', 'egui_*', eframe, epaint, emath, ecolor, 'fastframe-*']
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    groups:
+      actions-compatible:
+        patterns: ['*']
+        update-types: [minor, patch]
+  - package-ecosystem: gradle
+    directory: /mobile/android
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    groups:
+      android-compatible:
+        patterns: ['*']
+        update-types: [minor, patch]
