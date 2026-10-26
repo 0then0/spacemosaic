@@ -80,7 +80,9 @@ cargo run --release --locked -- /path/to/folder
 Desktop targets are Windows with MSVC, macOS, and Linux with X11/Wayland.
 Linux builds require a C/C++ compiler, pkg-config, libxkbcommon, Wayland, and EGL
 development packages. The CI workflow includes the Ubuntu package list.
-The full application is currently runtime-verified on macOS arm64 only.
+The full application is currently runtime-verified on macOS arm64 only. Linux,
+Android APK, and iOS simulator/device builds have passed CI; see the latest
+workflow for Windows verification and current artifact downloads.
 
 To package a desktop build:
 

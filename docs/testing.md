@@ -5,11 +5,15 @@ of evidence. Platform badges and release notes must not combine them.
 
 ## Current support
 
-The desktop application builds and runs on macOS arm64. Windows and Linux have
-CI build jobs; their runtime behavior requires verification. Android and iOS
-have native source integrations and CI build jobs, but do not yet have verified
-picker, lifecycle, accessibility, or physical-device coverage. They expose
+The desktop application builds and runs on macOS arm64. Linux desktop builds,
+Android APK packaging, and iOS simulator/device builds have passed GitHub
+Actions. Windows has a CI build job; its verification is tracked by the current
+workflow status. Desktop runtime outside macOS, mobile picker/lifecycle behavior,
+screen readers, and physical devices still require verification. They expose
 metadata browsing rather than the desktop application's recursive analysis.
+
+Current build outcomes and downloadable artifacts are recorded in
+[GitHub Actions](https://github.com/0then0/spacemosaic/actions/workflows/ci.yml).
 
 No release is published and no mobile device support is certified. The full
 mobile acceptance criteria remain open until runtime evidence is available.

@@ -1,4 +1,4 @@
-use spacemosaic::scan::{self, Kind, Options, Progress, Service, Sort};
+use spacemosaic::scan::{self, Options, Progress, Service, Sort};
 use std::{
     fs,
     path::PathBuf,
@@ -118,6 +118,7 @@ fn latest_job_has_its_own_results_and_worker_survives_replacement() {
 #[cfg(unix)]
 #[test]
 fn symlink_cycle_is_not_followed_and_hard_links_are_counted_per_path() {
+    use spacemosaic::scan::Kind;
     use std::os::unix::fs::symlink;
     let f = Fixture::new();
     fs::write(f.0.join("file"), [0; 11]).unwrap();
