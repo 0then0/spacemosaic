@@ -79,8 +79,19 @@ additional memory. JSON exports stream to a temporary file before saving.
 ## Download the alpha
 
 [v0.1.0-alpha.1](https://github.com/0then0/spacemosaic/releases/tag/v0.1.0-alpha.1)
-is a prerelease for **macOS on Apple Silicon (arm64)**. Download
-`spacemosaic-darwin-arm64.zip` and `SHA256SUMS` from the release, then verify:
+is a prerelease for **macOS on Apple Silicon (arm64)**. Builds for the other
+platforms are available for experimental testing from the same commit.
+
+| Platform | Architecture | Download | Status |
+| --- | --- | --- | --- |
+| Windows | x86-64 | [![Download Windows ZIP from CI](https://img.shields.io/badge/CI%20ZIP-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDFoMTB2MTBIMXpNMTMgMWgxMHYxMEgxM3pNMSAxM2gxMHYxMEgxek0xMyAxM2gxMHYxMEgxM3oiLz48L3N2Zz4%3D&logoColor=white)](https://github.com/0then0/spacemosaic/actions/runs/40385563062/artifacts/12680876809) | Experimental |
+| macOS | Apple Silicon (arm64) | [![Download macOS arm64 release ZIP](https://img.shields.io/badge/ZIP-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.1/spacemosaic-darwin-arm64.zip) | Alpha prerelease |
+| Linux | x86-64 | [![Download Linux ZIP from CI](https://img.shields.io/badge/CI%20ZIP-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/actions/runs/40385563062/artifacts/12681241280) | Experimental |
+| Android 8.0+ | arm64-v8a / x86_64 | [![Download Android debug APK bundle from CI](https://img.shields.io/badge/Debug%20APK-3DDC84?style=for-the-badge&logo=android&logoColor=black)](https://github.com/0then0/spacemosaic/actions/runs/40385563062/artifacts/12681446638) | Experimental · debug signed |
+| iOS 16+ | arm64 · device and simulator | [![Download iOS simulator and unsigned device builds from CI](https://img.shields.io/badge/CI%20builds-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/actions/runs/40385563062/artifacts/12680601886) | Experimental · device signing required |
+
+For the macOS release ZIP, download [SHA256SUMS](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.1/SHA256SUMS)
+into the same directory and verify:
 
 ```sh
 shasum -a 256 -c SHA256SUMS
@@ -92,9 +103,13 @@ macOS may require you to allow it in **System Settings → Privacy & Security**
 after the first launch attempt. This is an alpha; scan results are live
 observations and may be incomplete.
 
-Windows, Linux, Android, and iOS remain experimental. Their CI artifacts and
-source build instructions are available below; they are not runtime-qualified
-release downloads. See [verification status](docs/testing.md).
+Experimental buttons download GitHub Actions artifact bundles, which require
+signing in to GitHub and expire with artifact retention. Each bundle contains
+its build's SHA-256 manifest. They are not runtime-qualified release downloads.
+The iOS bundle includes a simulator app and an unsigned device app; installing
+on an iPhone requires provisioning and signing in Xcode. See
+[mobile build instructions](#mobile-development) and
+[verification status](docs/testing.md).
 
 ## Build and run
 
