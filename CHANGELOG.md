@@ -17,6 +17,11 @@
 - Pinned dependencies, desktop/mobile CI build checks, artifact packaging, and
   SHA-256 manifests.
 
+### Changed
+
+- Replaced the primary UI font with bundled Inter Regular 400 and Inter Medium
+  500 for headings, retaining Hack monospace and Noto Sans JP fallback.
+
 ### Fixed
 
 - iOS Rust builds request a static library instead of prematurely linking Swift

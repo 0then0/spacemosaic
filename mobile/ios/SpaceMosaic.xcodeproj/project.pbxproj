@@ -1,14 +1,17 @@
 // !$*UTF8*$!
 { archiveVersion = 1; classes = {}; objectVersion = 56; objects = {
+000000000000000000000019 = { isa = PBXFileReference; lastKnownFileType = text; path = ../../assets/fonts/Inter-OFL.txt; sourceTree = "<group>"; };
+00000000000000000000001A = { isa = PBXBuildFile; fileRef = 000000000000000000000019; };
+
 000000000000000000000017 = { isa = PBXFileReference; lastKnownFileType = folder; path = ../../assets/i18n; sourceTree = "<group>"; };
 000000000000000000000018 = { isa = PBXBuildFile; fileRef = 000000000000000000000017; };
 
 000000000000000000000014 = { isa = PBXFileReference; lastKnownFileType = text; path = ../../assets/fonts/OFL.txt; sourceTree = "<group>"; };
 000000000000000000000015 = { isa = PBXBuildFile; fileRef = 000000000000000000000014; };
-000000000000000000000016 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000015, 000000000000000000000018); runOnlyForDeploymentPostprocessing = 0; };
+000000000000000000000016 = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (000000000000000000000015, 000000000000000000000018, 00000000000000000000001A); runOnlyForDeploymentPostprocessing = 0; };
 
 000000000000000000000001 = { isa = PBXProject; attributes = { LastUpgradeCheck = 2600; }; buildConfigurationList = 000000000000000000000006; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; knownRegions = (en, Base); mainGroup = 000000000000000000000002; productRefGroup = 000000000000000000000003; projectDirPath = ""; targets = (000000000000000000000004); };
-000000000000000000000002 = { isa = PBXGroup; children = (000000000000000000000017, 000000000000000000000014, 00000000000000000000000D, 00000000000000000000000E, 00000000000000000000000F, 000000000000000000000010, 000000000000000000000003); sourceTree = "<group>"; };
+000000000000000000000002 = { isa = PBXGroup; children = (000000000000000000000019, 000000000000000000000017, 000000000000000000000014, 00000000000000000000000D, 00000000000000000000000E, 00000000000000000000000F, 000000000000000000000010, 000000000000000000000003); sourceTree = "<group>"; };
 000000000000000000000003 = { isa = PBXGroup; children = (000000000000000000000011); name = Products; sourceTree = "<group>"; };
 000000000000000000000004 = { isa = PBXNativeTarget; buildConfigurationList = 000000000000000000000005; buildPhases = (00000000000000000000000B, 00000000000000000000000C, 000000000000000000000016); buildRules = (); dependencies = (); name = SpaceMosaic; productName = SpaceMosaic; productReference = 000000000000000000000011; productType = "com.apple.product-type.application"; };
 00000000000000000000000D = { isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };

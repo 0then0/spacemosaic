@@ -50,25 +50,7 @@ pub struct ExplorerApp {
 }
 impl ExplorerApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "japanese".into(),
-            Arc::new(
-                egui::FontData::from_static(include_bytes!("../assets/fonts/NotoSansJP.ttf"))
-                    .tweak(egui::FontTweak {
-                        coords: egui::epaint::text::VariationCoords::new([(b"wght", 400.0)]),
-                        ..Default::default()
-                    }),
-            ),
-        );
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-            fonts
-                .families
-                .entry(family)
-                .or_default()
-                .push("japanese".into());
-        }
-        cc.egui_ctx.set_fonts(fonts);
+        cc.egui_ctx.set_fonts(crate::fonts::definitions());
         theme::install(&cc.egui_ctx);
         let repaint = cc.egui_ctx.clone();
         bridge::set_waker(Arc::new(move || repaint.request_repaint()));
@@ -940,6 +922,7 @@ mod tests {
     fn all_languages_render_at_phone_and_desktop_widths_in_each_theme() {
         let context = egui::Context::default();
         theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
         let mut app = ExplorerApp::empty();
         for language in 0..i18n::TAGS.len() {
             app.language = language;

@@ -97,9 +97,10 @@ pub fn install(context: &egui::Context) {
         style
             .text_styles
             .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(28.0));
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::new(28.0, crate::fonts::heading_family()),
+        );
         context.set_style_of(theme, style);
     }
 }

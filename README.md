@@ -41,7 +41,9 @@ apply to the current session.
 
 English is the primary project language. The interface includes English,
 Russian, Spanish, German, French, Japanese, and Brazilian Portuguese. A bundled
-Japanese font works offline; see [font licensing](assets/fonts/README.md).
+Japanese font works offline. Inter Regular 400 is the main UI font, Inter
+Medium 500 is used for headings, and Hack is used for monospace values.
+See [font licensing and asset checksums](assets/fonts/README.md).
 
 ## Understand the numbers
 
