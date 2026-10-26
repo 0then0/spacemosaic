@@ -92,5 +92,8 @@
   "file_one": "ファイル",
   "file_few": "ファイル",
   "file_many": "ファイル",
-  "file_other": "ファイル"
+  "file_other": "ファイル",
+  "expand": "展開",
+  "collapse": "折りたたむ",
+  "selected_item": "選択した項目"
 }

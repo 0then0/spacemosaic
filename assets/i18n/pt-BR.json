@@ -92,5 +92,8 @@
   "file_one": "arquivo",
   "file_few": "arquivos",
   "file_many": "arquivos",
-  "file_other": "arquivos"
+  "file_other": "arquivos",
+  "expand": "Expandir",
+  "collapse": "Recolher",
+  "selected_item": "Item selecionado"
 }

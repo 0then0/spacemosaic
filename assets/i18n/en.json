@@ -92,5 +92,8 @@
   "file_one": "file",
   "file_few": "files",
   "file_many": "files",
-  "file_other": "files"
+  "file_other": "files",
+  "expand": "Expand",
+  "collapse": "Collapse",
+  "selected_item": "Selected item"
 }

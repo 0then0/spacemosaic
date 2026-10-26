@@ -92,5 +92,8 @@
   "file_one": "archivo",
   "file_few": "archivos",
   "file_many": "archivos",
-  "file_other": "archivos"
+  "file_other": "archivos",
+  "expand": "Expandir",
+  "collapse": "Contraer",
+  "selected_item": "Elemento seleccionado"
 }

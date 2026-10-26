@@ -7,8 +7,11 @@ use crate::{
     treemap,
 };
 use eframe::egui::{self, RichText};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::path::Path;
 use std::{
-    path::{Path, PathBuf},
+    collections::HashSet,
+    path::PathBuf,
     sync::{Arc, mpsc},
     time::Duration,
 };
@@ -22,6 +25,11 @@ enum Page {
 
 pub struct ExplorerApp {
     language: usize,
+    settings_open: bool,
+    expanded: HashSet<usize>,
+    children: Vec<Vec<usize>>,
+    children_sort: Option<(Sort, bool)>,
+    tree_rows: Vec<(usize, usize)>,
     appearance: Appearance,
     service: scan::Service,
     job: Option<scan::Job>,
@@ -43,6 +51,7 @@ pub struct ExplorerApp {
     export: Option<mpsc::Receiver<bool>>,
     map_group: Option<Vec<usize>>,
     map_objects: Vec<Option<usize>>,
+    map_selected: Option<usize>,
     map_weights: Vec<f64>,
     grouped: Vec<usize>,
     #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -60,6 +69,11 @@ impl ExplorerApp {
     fn empty() -> Self {
         Self {
             language: i18n::system_language(),
+            settings_open: false,
+            expanded: HashSet::from([0]),
+            children: Vec::new(),
+            children_sort: None,
+            tree_rows: Vec::new(),
             appearance: Appearance::System,
             service: scan::Service::default(),
             job: None,
@@ -81,6 +95,7 @@ impl ExplorerApp {
             export: None,
             map_group: None,
             map_objects: Vec::new(),
+            map_selected: None,
             map_weights: Vec::new(),
             grouped: Vec::new(),
             #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -100,6 +115,10 @@ impl ExplorerApp {
         self.selected = None;
         self.directory = 0;
         self.rows.clear();
+        self.children.clear();
+        self.children_sort = None;
+        self.tree_rows.clear();
+        self.expanded = HashSet::from([0]);
         self.extensions.clear();
         self.query.clear();
         self.notice = None;
@@ -128,6 +147,7 @@ impl ExplorerApp {
     }
     fn navigate(&mut self, index: usize) {
         self.directory = index;
+        self.expanded.insert(index);
         self.selected = Some(index);
         self.page = Page::Directory;
         self.query.clear();
@@ -152,6 +172,48 @@ impl ExplorerApp {
             return;
         }
         if let Some(result) = &self.result {
+            if self.children.len() != result.nodes.len() {
+                self.children = vec![Vec::new(); result.nodes.len()];
+                for (index, node) in result.nodes.iter().enumerate() {
+                    if let Some(parent) = node.parent {
+                        self.children[parent].push(index);
+                    }
+                }
+            }
+            if self.children_sort != Some((self.sort, self.allocated)) {
+                for children in &mut self.children {
+                    children.sort_by(|a, b| {
+                        let size = |i: usize| {
+                            if self.allocated {
+                                result.nodes[i].allocated.known
+                            } else {
+                                result.nodes[i].logical.known
+                            }
+                        };
+                        let by_name = || {
+                            result.nodes[*a]
+                                .name
+                                .to_lowercase()
+                                .cmp(&result.nodes[*b].name.to_lowercase())
+                                .then(a.cmp(b))
+                        };
+                        if self.sort == Sort::Size {
+                            size(*b).cmp(&size(*a)).then_with(by_name)
+                        } else {
+                            by_name()
+                        }
+                    });
+                }
+                self.children_sort = Some((self.sort, self.allocated));
+            }
+            self.tree_rows.clear();
+            let mut pending = vec![(self.directory, 0)];
+            while let Some((index, depth)) = pending.pop() {
+                self.tree_rows.push((index, depth));
+                if self.expanded.contains(&index) {
+                    pending.extend(self.children[index].iter().rev().map(|i| (*i, depth + 1)));
+                }
+            }
             self.rows = if let Some(group) = &self.map_group {
                 group.clone()
             } else if !self.query.is_empty() {
@@ -229,6 +291,7 @@ impl ExplorerApp {
                 );
             }
         }
+        self.map_selected = self.selected_tile();
         self.dirty = false;
     }
     fn poll(&mut self, context: &egui::Context) {
@@ -281,39 +344,53 @@ impl ExplorerApp {
     fn settings(&mut self, ui: &mut egui::Ui) {
         let language = self.language;
         let t = |key| i18n::text(language, key);
-        ui.menu_button(t("settings"), |ui| {
-            ui.set_max_width(300.0);
-            ui.label(t("appearance"));
-            ui.horizontal_wrapped(|ui| {
-                for appearance in Appearance::ALL {
-                    if ui
-                        .selectable_value(&mut self.appearance, appearance, t(appearance.key()))
-                        .changed()
-                    {
-                        ui.ctx().set_theme(appearance.preference());
-                    }
-                }
-            });
-            egui::ComboBox::from_label(t("language"))
-                .selected_text(i18n::TAGS[self.language])
-                .show_ui(ui, |ui| {
-                    for (index, tag) in i18n::TAGS.iter().enumerate() {
-                        ui.selectable_value(&mut self.language, index, *tag);
+        if ui.button(t("settings")).clicked() {
+            self.settings_open = !self.settings_open;
+        }
+    }
+    fn settings_window(&mut self, context: &egui::Context) {
+        let language = self.language;
+        let t = |key| i18n::text(language, key);
+        egui::Window::new(t("settings"))
+            .id(egui::Id::new("settings-window"))
+            .open(&mut self.settings_open)
+            .resizable(false)
+            .default_width(280.0)
+            .show(context, |ui| {
+                ui.label(t("appearance"));
+                ui.horizontal_wrapped(|ui| {
+                    for appearance in Appearance::ALL {
+                        if ui
+                            .selectable_value(&mut self.appearance, appearance, t(appearance.key()))
+                            .changed()
+                        {
+                            ui.ctx().set_theme(appearance.preference());
+                        }
                     }
                 });
-            ui.horizontal_wrapped(|ui| {
-                if ui.button(t("smaller")).clicked() {
-                    ui.ctx()
-                        .set_zoom_factor((ui.ctx().zoom_factor() - 0.15).max(1.0));
-                }
-                if ui.button(t("larger")).clicked() {
-                    ui.ctx()
-                        .set_zoom_factor((ui.ctx().zoom_factor() + 0.15).min(2.5));
-                }
+                let language_label = ui.label(t("language"));
+                egui::ComboBox::from_id_salt("application-language")
+                    .selected_text(i18n::TAGS[self.language])
+                    .show_ui(ui, |ui| {
+                        for (index, tag) in i18n::TAGS.iter().enumerate() {
+                            ui.selectable_value(&mut self.language, index, *tag);
+                        }
+                    })
+                    .response
+                    .labelled_by(language_label.id);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(t("smaller")).clicked() {
+                        ui.ctx()
+                            .set_zoom_factor((ui.ctx().zoom_factor() - 0.15).max(1.0));
+                    }
+                    if ui.button(t("larger")).clicked() {
+                        ui.ctx()
+                            .set_zoom_factor((ui.ctx().zoom_factor() + 0.15).min(2.5));
+                    }
+                });
+                ui.checkbox(&mut self.cross_filesystems, t("cross_filesystems"));
+                ui.label(t("mount_policy"));
             });
-            ui.checkbox(&mut self.cross_filesystems, t("cross_filesystems"));
-            ui.label(t("mount_policy"));
-        });
     }
     fn header(&mut self, ui: &mut egui::Ui) {
         let language = self.language;
@@ -504,7 +581,7 @@ impl ExplorerApp {
             });
         }
     }
-    fn table(&mut self, ui: &mut egui::Ui) {
+    fn table(&mut self, ui: &mut egui::Ui, height: f32) {
         let Some(result) = self.result.clone() else {
             return;
         };
@@ -519,45 +596,187 @@ impl ExplorerApp {
             ui.label(t("no_results"));
             return;
         }
-        let row_height = 60.0;
+        let tree =
+            self.page == Page::Directory && self.query.is_empty() && self.map_group.is_none();
+        let count = if tree {
+            self.tree_rows.len()
+        } else {
+            self.rows.len()
+        };
+        let compact = ui.available_width() >= 600.0;
+        let row_height = if compact { 32.0 } else { 48.0 };
+        ui.horizontal(|ui| {
+            ui.strong(t("name"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.strong(t(if self.allocated { "allocated" } else { "size" }));
+            });
+        });
         egui::ScrollArea::vertical()
             .id_salt("object-list")
-            .max_height(420.0)
-            .show_rows(ui, row_height, self.rows.len(), |ui, range| {
+            .max_height(height)
+            .auto_shrink([false, false])
+            .show_rows(ui, row_height, count, |ui, range| {
                 for position in range {
-                    let index = self.rows[position];
+                    let (index, depth) = if tree {
+                        self.tree_rows[position]
+                    } else {
+                        (self.rows[position], 0)
+                    };
                     let node = &result.nodes[index];
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            let name = format!("{}  {}", t(kind_key(node.kind)), node.name);
+                    let size = measure(
+                        language,
+                        if self.allocated {
+                            node.allocated
+                        } else {
+                            node.logical
+                        },
+                    );
+                    ui.push_id(index, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.horizontal(|ui| {
+                            ui.add_space((depth as f32 * 18.0).min(ui.available_width() * 0.35));
+                            if tree
+                                && node.kind == Kind::Directory
+                                && !self.children[index].is_empty()
+                            {
+                                let open = self.expanded.contains(&index);
+                                let response = ui.add_sized(
+                                    [28.0, row_height],
+                                    egui::Button::new("").frame_when_inactive(false),
+                                );
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        format!(
+                                            "{}: {}",
+                                            t(if open { "collapse" } else { "expand" }),
+                                            node.name
+                                        ),
+                                    )
+                                });
+                                let center = response.rect.center();
+                                let points = if open {
+                                    vec![
+                                        center + egui::vec2(-4.0, -2.0),
+                                        center + egui::vec2(4.0, -2.0),
+                                        center + egui::vec2(0.0, 3.0),
+                                    ]
+                                } else {
+                                    vec![
+                                        center + egui::vec2(-2.0, -4.0),
+                                        center + egui::vec2(-2.0, 4.0),
+                                        center + egui::vec2(3.0, 0.0),
+                                    ]
+                                };
+                                ui.painter().add(egui::Shape::convex_polygon(
+                                    points,
+                                    ui.visuals().text_color(),
+                                    egui::Stroke::NONE,
+                                ));
+                                if response
+                                    .on_hover_text(format!("{}: {}", t("directory"), node.name))
+                                    .clicked()
+                                {
+                                    if open {
+                                        self.expanded.remove(&index);
+                                    } else {
+                                        self.expanded.insert(index);
+                                    }
+                                    self.dirty = true;
+                                }
+                            } else {
+                                ui.add_space(28.0);
+                            }
+                            let (icon_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(16.0, row_height),
+                                egui::Sense::hover(),
+                            );
+                            let center = icon_rect.center();
+                            let icon = egui::Rect::from_center_size(center, egui::vec2(14.0, 11.0));
+                            if node.kind == Kind::Directory {
+                                ui.painter().rect_filled(
+                                    icon,
+                                    2.0,
+                                    theme::accent(ui.visuals().dark_mode),
+                                );
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_size(
+                                        icon.min - egui::vec2(0.0, 3.0),
+                                        egui::vec2(7.0, 5.0),
+                                    ),
+                                    1.0,
+                                    theme::accent(ui.visuals().dark_mode),
+                                );
+                            } else {
+                                ui.painter().rect_stroke(
+                                    icon,
+                                    1.0,
+                                    egui::Stroke::new(1.0, ui.visuals().text_color()),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+                            let width = (ui.available_width()
+                                - if compact { 180.0 } else { 115.0 })
+                            .max(35.0);
                             let response = ui.add_sized(
-                                egui::vec2((ui.available_width() - 120.0).max(60.0), 44.0),
-                                egui::Button::new(name)
+                                [width, row_height],
+                                egui::Button::new(&node.name)
+                                    .right_text(())
+                                    .frame_when_inactive(self.selected == Some(index))
                                     .selected(self.selected == Some(index))
                                     .truncate(),
                             );
                             if response.clicked() {
-                                self.selected = Some(index);
+                                self.select(index);
                             }
                             if response.double_clicked() && node.kind == Kind::Directory {
                                 self.navigate(index);
                             }
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.monospace(measure(
-                                language,
-                                if self.allocated {
-                                    node.allocated
-                                } else {
-                                    node.logical
-                                },
+                            response.on_hover_text(format!(
+                                "{}: {}",
+                                t(kind_key(node.kind)),
+                                node.locator
                             ));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.monospace(size);
+                                },
+                            );
                         });
                     });
                 }
             });
     }
-    fn map(&mut self, ui: &mut egui::Ui) {
+    fn select(&mut self, index: usize) {
+        self.selected = Some(index);
+        if let Some(result) = &self.result {
+            for ancestor in result
+                .breadcrumbs(index)
+                .into_iter()
+                .take_while(|i| *i != index)
+            {
+                self.expanded.insert(ancestor);
+            }
+        }
+        self.dirty = true;
+    }
+    /// Map a nested selection to its nearest visible ancestor or grouped tile.
+    fn selected_tile(&self) -> Option<usize> {
+        let result = self.result.as_ref()?;
+        let mut index = self.selected?;
+        loop {
+            if let Some(position) = self.map_objects.iter().position(|i| *i == Some(index)) {
+                return Some(position);
+            }
+            if self.grouped.contains(&index) {
+                return self.map_objects.iter().position(Option::is_none);
+            }
+            index = result.nodes[index].parent?;
+        }
+    }
+    fn map(&mut self, ui: &mut egui::Ui, height: f32, fit: bool) {
         let Some(result) = self.result.clone() else {
             return;
         };
@@ -569,9 +788,28 @@ impl ExplorerApp {
                 .color(theme::accent(ui.visuals().dark_mode)),
         );
         ui.label(RichText::new(t("map_help")).small().weak());
+        let selected_tile = self.map_selected;
+        if let Some(index) = self.selected {
+            let path = format!("{}: {}", t("selected_item"), result.nodes[index].locator);
+            ui.add(egui::Label::new(&path).truncate())
+                .on_hover_text(path);
+        }
         let objects = self.map_objects.clone();
         let weights = self.map_weights.clone();
-        let size = egui::vec2(ui.available_width(), 300.0);
+        let group_height = if self.grouped.is_empty() {
+            0.0
+        } else {
+            ui.spacing().interact_size.y + ui.spacing().item_spacing.y
+        };
+        let canvas_height = if fit {
+            height.min(ui.available_height() - group_height).max(0.0)
+        } else {
+            height
+        };
+        if canvas_height < 1.0 {
+            return;
+        }
+        let size = egui::vec2(ui.available_width(), canvas_height);
         let (bounds, _) = ui.allocate_exact_size(size, egui::Sense::hover());
         if weights.is_empty() {
             ui.painter().text(
@@ -602,20 +840,14 @@ impl ExplorerApp {
             let label = objects[position]
                 .map(|i| result.nodes[i].name.as_str())
                 .unwrap_or(t("grouped_items"));
-            let selected = objects[position].is_some() && self.selected == objects[position];
+            let selected = selected_tile == Some(position);
             let response =
                 ui.interact(area, ui.id().with(("tile", position)), egui::Sense::click());
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
             });
-            let dark = ui.visuals().dark_mode;
-            let shade = if selected || response.hovered() {
-                if dark { 95 } else { 172 }
-            } else {
-                if dark { 43 } else { 216 }
-            };
-            ui.painter()
-                .rect_filled(area, 4.0, egui::Color32::from_gray(shade));
+            let color = tile_color(objects[position].map(|i| &result.nodes[i]));
+            ui.painter().rect_filled(area, 4.0, color);
             if selected || response.has_focus() {
                 ui.painter().rect_stroke(
                     area,
@@ -629,28 +861,31 @@ impl ExplorerApp {
                 painter.text(
                     area.min + egui::vec2(10.0, 10.0),
                     egui::Align2::LEFT_TOP,
-                    label,
+                    objects[position]
+                        .map(|i| format!("{}: {}", t(kind_key(result.nodes[i].kind)), label))
+                        .unwrap_or_else(|| label.into()),
                     egui::FontId::proportional(13.0),
-                    ui.visuals().text_color(),
+                    egui::Color32::WHITE,
                 );
                 painter.text(
                     area.min + egui::vec2(10.0, 29.0),
                     egui::Align2::LEFT_TOP,
                     i18n::bytes(language, weights[position].min(u64::MAX as f64) as u64),
                     egui::FontId::monospace(12.0),
-                    ui.visuals().text_color(),
+                    egui::Color32::WHITE,
                 );
             }
             let double_clicked = response.double_clicked();
             if response.clicked() {
                 if let Some(index) = objects[position] {
-                    self.selected = Some(index);
+                    self.select(index);
                 } else {
                     self.map_group = Some(self.grouped.clone());
                     self.dirty = true;
                 }
             }
-            if double_clicked
+            if (double_clicked
+                || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))))
                 && let Some(index) = objects[position]
                 && result.nodes[index].kind == Kind::Directory
             {
@@ -760,6 +995,50 @@ impl ExplorerApp {
     }
 }
 impl ExplorerApp {
+    fn object_workspace(&mut self, ui: &mut egui::Ui, wide: bool) {
+        let remaining = ui.clip_rect().bottom() - ui.cursor().top();
+        if wide && remaining >= 360.0 {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), remaining),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    egui::Panel::bottom("treemap-panel")
+                        .resizable(true)
+                        .default_size(remaining * 0.48)
+                        .size_range(160.0..=(remaining - 140.0))
+                        .show(ui, |ui| {
+                            ui.set_min_height(ui.available_height());
+                            self.map(ui, ui.available_height(), true);
+                        });
+                    let tree_bounds = ui.available_rect_before_wrap();
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(tree_bounds), |ui| {
+                        ui.set_clip_rect(tree_bounds.intersect(ui.clip_rect()));
+                        egui::ScrollArea::vertical()
+                            .id_salt("tree-and-details")
+                            .show(ui, |ui| {
+                                if let Some(name) = self.selected.and_then(|i| {
+                                    self.result.as_ref().map(|r| r.nodes[i].name.clone())
+                                }) {
+                                    egui::CollapsingHeader::new(name)
+                                        .id_salt("selection-details")
+                                        .show(ui, |ui| self.details(ui));
+                                }
+                                self.table(ui, (tree_bounds.height() - 70.0).max(80.0));
+                            });
+                    });
+                },
+            );
+        } else {
+            // Natural vertical flow preserves access when toolbars, translation,
+            // text scaling, or an expanded details panel consume the viewport.
+            self.table(ui, 240.0);
+            ui.add_space(12.0);
+            ui.separator();
+            self.map(ui, 260.0, false);
+            ui.add_space(12.0);
+            self.details(ui);
+        }
+    }
     fn draw(&mut self, ui: &mut egui::Ui) {
         self.poll(ui.ctx());
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -802,8 +1081,14 @@ impl ExplorerApp {
                     .inner_margin(egui::Margin::same(16)),
             )
             .show(ui, |ui| {
+                let desktop = ui.available_width() >= 700.0 && ui.available_height() >= 600.0;
+                if desktop {
+                    ui.spacing_mut().interact_size.y = 30.0;
+                    ui.spacing_mut().button_padding.y = 5.0;
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                }
                 self.header(ui);
-                ui.add_space(16.0);
+                ui.add_space(12.0);
                 egui::ScrollArea::vertical()
                     .id_salt("workspace")
                     .show(ui, |ui| {
@@ -833,18 +1118,11 @@ impl ExplorerApp {
                                             });
                                         }
                                     });
-                            } else if ui.available_width() >= 940.0 {
-                                ui.columns(2, |columns| {
-                                    self.table(&mut columns[0]);
-                                    self.map(&mut columns[1]);
-                                });
-                            } else {
-                                self.map(ui);
                                 ui.add_space(12.0);
-                                self.table(ui);
+                                self.details(ui);
+                            } else {
+                                self.object_workspace(ui, desktop);
                             }
-                            ui.add_space(12.0);
-                            self.details(ui);
                         } else if self.job.is_none() && self.preview.is_none() {
                             let language = self.language;
                             let t = |key| i18n::text(language, key);
@@ -862,7 +1140,30 @@ impl ExplorerApp {
                         self.mobile_preview(ui);
                     });
             });
+        self.settings_window(ui.ctx());
     }
+}
+// Stable colors keep the same folder or file type recognizable across navigation.
+fn tile_color(node: Option<&scan::Node>) -> egui::Color32 {
+    let palette = [
+        0x285b87, 0x7850a1, 0x267065, 0x95602b, 0x93465e, 0x495fa1, 0x556c2c, 0x8b4d31,
+    ];
+    let Some(node) = node else {
+        return egui::Color32::from_gray(72);
+    };
+    let key = if node.kind == Kind::Directory {
+        node.locator.clone()
+    } else {
+        PathBuf::from(&node.name)
+            .extension()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    let hash = key.bytes().fold(2166136261_u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(16777619)
+    });
+    let color = palette[hash as usize % palette.len()];
+    egui::Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8)
 }
 fn kind_key(kind: Kind) -> &'static str {
     match kind {
@@ -918,12 +1219,314 @@ impl eframe::App for ExplorerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture() -> ExplorerApp {
+        let mut app = ExplorerApp::empty();
+        let nodes = [
+            (None, "Scope", Kind::Directory, 120),
+            (Some(0), "Photos", Kind::Directory, 100),
+            (Some(1), "Trips", Kind::Directory, 100),
+            (Some(2), "image.jpg", Kind::File, 100),
+            (Some(0), "notes.txt", Kind::File, 20),
+        ]
+        .into_iter()
+        .map(|(parent, name, kind, known)| scan::Node {
+            parent,
+            name: name.into(),
+            locator: name.into(),
+            native_locator: name.into(),
+            kind,
+            logical: scan::Measure {
+                known,
+                ..Default::default()
+            },
+            allocated: scan::Measure::default(),
+            complete: true,
+            hard_link: false,
+            error: None,
+            path: None,
+        })
+        .collect();
+        app.result = Some(Arc::new(ScanResult {
+            schema_version: 1,
+            started_unix_seconds: 0,
+            elapsed_millis: 1,
+            scope: "Scope".into(),
+            cancelled: false,
+            limited: false,
+            cross_filesystems: false,
+            errors: 0,
+            nodes,
+        }));
+        app.language = 0;
+        app
+    }
+    fn frame(
+        app: &mut ExplorerApp,
+        context: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        frame_at(app, context, events, egui::vec2(1180.0, 900.0))
+    }
+    fn frame_at(
+        app: &mut ExplorerApp,
+        context: &egui::Context,
+        events: Vec<egui::Event>,
+        size: egui::Vec2,
+    ) -> egui::FullOutput {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                events,
+                ..Default::default()
+            },
+            |ui| app.draw(ui),
+        );
+        output.textures_delta.clear();
+        output
+    }
+    fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing rendered text: {label}"))
+    }
+    fn click(app: &mut ExplorerApp, context: &egui::Context, pos: egui::Pos2) -> egui::FullOutput {
+        for pressed in [true, false] {
+            frame(
+                app,
+                context,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        frame(app, context, vec![])
+    }
+    #[test]
+    fn language_popup_stays_open_and_selects_a_language_in_settings() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = ExplorerApp::empty();
+        app.language = 0;
+        frame(&mut app, &context, vec![]);
+        let output = frame(&mut app, &context, vec![]);
+        let pos = text_position(&output, "Settings");
+        click(&mut app, &context, pos);
+        let output = frame(&mut app, &context, vec![]);
+        assert!(app.settings_open);
+        let pos = text_position(&output, "en");
+        click(&mut app, &context, pos);
+        let output = frame(&mut app, &context, vec![]);
+        let pos = text_position(&output, "ru");
+        click(&mut app, &context, pos);
+        assert_eq!(app.language, 1);
+        assert!(app.settings_open);
+    }
+    #[test]
+    fn tree_expansion_sorting_and_map_selection_preserve_hierarchy() {
+        let mut app = fixture();
+        app.refresh_rows();
+        assert_eq!(app.tree_rows, vec![(0, 0), (1, 1), (4, 1)]);
+        app.select(3);
+        app.refresh_rows();
+        assert_eq!(app.tree_rows, vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 1)]);
+        app.expanded.remove(&1);
+        app.dirty = true;
+        app.refresh_rows();
+        assert_eq!(app.tree_rows.len(), 3);
+        assert_eq!(app.selected, Some(3));
+        app.sort = Sort::Name;
+        app.dirty = true;
+        app.refresh_rows();
+        assert_eq!(app.tree_rows[1].0, 4);
+        assert_eq!(app.map_objects.iter().flatten().count(), 2);
+        app.navigate(1);
+        app.refresh_rows();
+        assert_eq!(app.tree_rows[0], (1, 0));
+        app.back();
+        assert_eq!(app.directory, 0);
+    }
+    #[test]
+    fn desktop_tree_stays_above_map_with_both_visible() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = fixture();
+        frame(&mut app, &context, vec![]);
+        for _ in 0..12 {
+            frame(&mut app, &context, vec![]);
+        }
+        let output = frame(&mut app, &context, vec![]);
+        let panel =
+            egui::containers::panel::PanelState::load(&context, egui::Id::new("treemap-panel"))
+                .unwrap();
+        assert!(
+            panel.size().y >= 200.0,
+            "map panel shrank: {:?}",
+            panel.size()
+        );
+        let tree = text_position(&output, "CONTENTS");
+        let map = text_position(&output, "SPACE MAP");
+        assert!(tree.y < map.y);
+        assert!(map.y < 800.0);
+    }
+    #[test]
+    fn result_rows_do_not_overlap_map_after_resize_or_text_scaling() {
+        for language in 0..i18n::TAGS.len() {
+            for appearance in [Appearance::Light, Appearance::Dark] {
+                let context = egui::Context::default();
+                theme::install(&context);
+                context.set_fonts(crate::fonts::definitions());
+                context.set_theme(appearance.preference());
+                let mut app = fixture();
+                app.language = language;
+                app.select(3);
+                for (size, zoom) in [
+                    (egui::vec2(1180.0, 900.0), 1.0),
+                    (egui::vec2(744.0, 684.0), 1.0),
+                    (egui::vec2(1180.0, 900.0), 1.6),
+                    (egui::vec2(320.0, 640.0), 1.0),
+                ] {
+                    context.set_zoom_factor(zoom);
+                    for _ in 0..4 {
+                        frame_at(&mut app, &context, vec![], size);
+                    }
+                    let mut output = frame_at(&mut app, &context, vec![], size);
+                    let folder_color = tile_color(Some(&app.result.as_ref().unwrap().nodes[1]));
+                    let map_position = |output: &egui::FullOutput| {
+                        output.shapes.iter().find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text)
+                                if text.galley.text() == i18n::text(language, "treemap") =>
+                            {
+                                Some(text.pos.y)
+                            }
+                            egui::Shape::Rect(rect) if rect.fill == folder_color => {
+                                Some(rect.rect.top())
+                            }
+                            _ => None,
+                        })
+                    };
+                    if map_position(&output).is_none() {
+                        for _ in 0..8 {
+                            output = frame_at(
+                                &mut app,
+                                &context,
+                                vec![
+                                    egui::Event::PointerMoved(egui::pos2(
+                                        24.0,
+                                        size.y / zoom - 40.0,
+                                    )),
+                                    egui::Event::MouseWheel {
+                                        unit: egui::MouseWheelUnit::Point,
+                                        phase: egui::TouchPhase::Move,
+                                        delta: egui::vec2(0.0, -180.0),
+                                        modifiers: Default::default(),
+                                    },
+                                ],
+                                size,
+                            );
+                            if map_position(&output).is_some() {
+                                break;
+                            }
+                        }
+                    }
+                    let map_y = map_position(&output).unwrap_or_else(|| {
+                        panic!("map is unreachable: {size:?}, zoom {zoom}, language {language}")
+                    });
+                    for shape in &output.shapes {
+                        if let egui::Shape::Text(text) = &shape.shape
+                            && ["Scope", "Photos", "Trips", "notes.txt"]
+                                .contains(&text.galley.text())
+                        {
+                            let bounds = egui::Rect::from_min_size(text.pos, text.galley.size())
+                                .intersect(shape.clip_rect);
+                            if bounds.is_positive() {
+                                assert!(
+                                    bounds.bottom() < map_y,
+                                    "tree overlaps map: {size:?}, zoom {zoom}, language {language}, {bounds:?} >= {map_y}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn selected_tree_row_has_a_background_without_hover() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = fixture();
+        app.select(3);
+        for _ in 0..3 {
+            frame(&mut app, &context, vec![]);
+        }
+        let output = frame(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(egui::Pos2::ZERO)],
+        );
+        let text = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "image.jpg" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .next_back()
+            .unwrap();
+        let fill = context.style_of(context.theme()).visuals.selection.bg_fill;
+        assert!(
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Rect(rect) if rect.fill == fill && rect.rect.contains(text))),
+            "selected row has no persistent selection background"
+        );
+    }
+    #[test]
+    fn nested_selection_marks_its_visible_containing_tile_and_path() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = fixture();
+        app.select(3);
+        for _ in 0..3 {
+            frame(&mut app, &context, vec![]);
+        }
+        let output = frame(&mut app, &context, vec![]);
+        assert_eq!(app.selected_tile(), Some(0));
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text().contains("Selected item: image.jpg"))));
+        app.navigate(2);
+        app.select(3);
+        app.refresh_rows();
+        assert_eq!(app.map_objects[app.selected_tile().unwrap()], Some(3));
+        app.back();
+        app.refresh_rows();
+        assert_eq!(app.directory, 1);
+    }
     #[test]
     fn all_languages_render_at_phone_and_desktop_widths_in_each_theme() {
         let context = egui::Context::default();
         theme::install(&context);
         context.set_fonts(crate::fonts::definitions());
-        let mut app = ExplorerApp::empty();
+        let mut app = fixture();
+        app.settings_open = true;
         for language in 0..i18n::TAGS.len() {
             app.language = language;
             for width in [320.0, 1180.0] {
@@ -982,6 +1585,10 @@ mod tests {
         assert!(app.map_objects.len() <= 96);
         assert!(!app.grouped.is_empty());
         let grouped_count = app.grouped.len();
+        assert!(
+            app.map_objects[app.selected_tile().unwrap()].is_none(),
+            "a selected small file must mark the grouped tile"
+        );
         app.map_group = Some(app.grouped.clone());
         app.dirty = true;
         app.refresh_rows();

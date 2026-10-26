@@ -6,6 +6,7 @@ import platform
 import plistlib
 import shutil
 import subprocess
+import tempfile
 import zipfile
 
 root = pathlib.Path(__file__).resolve().parent.parent
@@ -21,11 +22,31 @@ if system == "darwin":
     app = bundle / "SpaceMosaic.app/Contents"
     (app / "MacOS").mkdir(parents=True, exist_ok=True)
     shutil.copy2(executable, app / "MacOS/spacemosaic")
+    resources = app / "Resources"
+    resources.mkdir(exist_ok=True)
+    # AppKit's standard About panel resolves this named image independently of
+    # the runtime Dock icon. Keep the bundle icon and named resource identical.
+    previous_icon = resources / "SpaceMosaic.icns"
+    if previous_icon.exists():
+        previous_icon.unlink()
+    with tempfile.TemporaryDirectory(prefix="spacemosaic-icon-") as temporary:
+        iconset = pathlib.Path(temporary) / "SpaceMosaic.iconset"
+        iconset.mkdir()
+        for size in [16, 32, 128, 256, 512]:
+            for scale in [1, 2]:
+                suffix = "@2x" if scale == 2 else ""
+                destination = iconset / f"icon_{size}x{size}{suffix}.png"
+                subprocess.run(["sips", "-z", str(size * scale), str(size * scale),
+                                str(root / "assets/icon.png"), "--out", str(destination)],
+                               check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o",
+                        str(resources / "NSApplicationIcon.icns")], check=True)
     with (app / "Info.plist").open("wb") as output:
         plistlib.dump({"CFBundleIdentifier": "dev.spacemosaic.desktop",
                       "CFBundleName": "SpaceMosaic", "CFBundleExecutable": "spacemosaic",
                       "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.1.0",
-                      "CFBundleVersion": "1", "NSHighResolutionCapable": True}, output)
+                      "CFBundleVersion": "1", "CFBundleIconFile": "NSApplicationIcon.icns",
+                      "NSHighResolutionCapable": True}, output)
 else:
     shutil.copy2(executable, bundle / executable.name)
 for file in ["README.md", "LICENSE"]:

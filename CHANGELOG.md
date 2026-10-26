@@ -19,10 +19,22 @@
 
 ### Changed
 
+- Placed an expandable directory tree above the colored, labeled space map,
+  with a resizable divider on wide windows.
+
 - Replaced the primary UI font with bundled Inter Regular 400 and Inter Medium
   500 for headings, retaining Hack monospace and Noto Sans JP fallback.
 
 ### Fixed
+
+- Result panes stay separate after window resizing and text scaling, with a
+  scrollable fallback when the viewport cannot fit both panes.
+- Selected tree rows remain visibly highlighted without hover, and nested or
+  grouped selections mark their containing map tile with the selected path.
+
+- Language selection remains open in a dedicated Settings window.
+- Desktop windows use the project icon; macOS packages include a complete
+  multi-resolution ICNS resource and bundle icon metadata.
 
 - iOS Rust builds request a static library instead of prematurely linking Swift
   symbols into a dynamic library.

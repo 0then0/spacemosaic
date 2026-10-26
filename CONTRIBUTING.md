@@ -18,6 +18,14 @@ cargo build --release --locked
 The optional `gui` feature is enabled by default. Core storage and geometry
 tests also run with `cargo test --locked --no-default-features`.
 Mobile prerequisites and build commands are documented in the README.
+On macOS, GUI builds use Xcode Command Line Tools to compile the small AppKit
+icon bridge; core-only builds and other platforms do not compile it.
+
+The icon source is `assets/icon.svg`; keep its checked-in 1024×1024 RGBA export,
+`assets/icon.png`, in sync when changing the artwork. Desktop packaging creates
+all macOS ICNS resolutions from that PNG. After packaging on macOS, run
+`python3 -m unittest discover -s tests -p 'test_*.py'` and check the native About
+panel after a full application restart.
 
 ## Change requirements
 

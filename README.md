@@ -23,18 +23,23 @@ verification. See [platform support](docs/testing.md).
   or pass its path on the command line.
 - Scan on a background worker with progress, cancellation, and explicit partial
   results. Starting another scan replaces the previous session.
-- Navigate folders with breadcrumbs and Back, inspect the largest files, and
-  review file types, including files without an extension.
+- Expand folders in the tree above the space map. On wide windows, drag the
+  divider to resize the two areas. When space is limited, the result scrolls
+  vertically so controls and content remain accessible. Navigate with breadcrumbs and Back, inspect
+  the largest files, and review file types, including files without an extension.
 - Search the completed result and sort by name or logical size without reading
   the disk again.
-- Select an object in the list or squarified treemap to inspect the same details.
+- Select an object in the tree or squarified treemap to inspect the same details.
+  Tiles use stable colors for folders and file extensions, with explicit folder
+  labels so navigation does not depend on color. Selecting a nested file marks
+  its containing tile and shows the selected path above the map.
   Double-click a directory to zoom in. Smaller map items expand into a list;
   zero and unknown sizes remain available in the list.
 - Copy a path, reveal an object in the system file manager, or export a
   versioned JSON result and CSV file-type summary through a system save dialog.
 
-The interface offers **System**, **Light**, and **Dark** appearance. The system
-option follows OS appearance changes; explicit choices override it. The visual
+Open **Settings** to choose a language, text size, or **System**, **Light**,
+and **Dark** appearance. The system option follows OS appearance changes; explicit choices override it. The visual
 style uses layered neutral surfaces without shadows, readable typography, and
 restrained sage section labels. Theme, language, and text-size choices currently
 apply to the current session.
@@ -95,6 +100,8 @@ python3 scripts/package-desktop.py
 The script creates a ZIP and SHA-256 manifest in `dist/`. Extract the archive and
 run `SpaceMosaic.app`, `spacemosaic.exe`, or `spacemosaic`. On Linux, restore the
 executable bit with `chmod +x spacemosaic` if the extraction tool removed it.
+macOS bundles include a multi-resolution project icon for Finder, Dock, and
+About. The running desktop window also uses the bundled project icon.
 macOS packaging uses local ad-hoc signing; it is not Developer ID signing or
 notarization. There are no published releases yet.
 

@@ -92,5 +92,8 @@
   "file_one": "файл",
   "file_few": "файла",
   "file_many": "файлов",
-  "file_other": "файлов"
+  "file_other": "файлов",
+  "expand": "Развернуть",
+  "collapse": "Свернуть",
+  "selected_item": "Выбранный объект"
 }

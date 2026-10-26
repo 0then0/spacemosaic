@@ -26,13 +26,19 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-targets
 cargo test --locked --no-default-features
 cargo build --release --locked
+python3 scripts/package-desktop.py
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
 Tests use disposable directories and cover metadata traversal and aggregation,
 unknown data, explicit cancellation, resource limits, session replacement,
 symlinks/cycles and hard links on Unix, sparse allocation, result filtering,
 sorting, JSON/CSV export, treemap geometry, hit regions, theme selection and
-contrast, and translation-key completeness. Invalid UTF-8 filesystem names are
+contrast, translation-key completeness, tree expansion/selection, desktop
+tree/map placement, and pointer-based language selection. Regression checks
+exercise resizing, text scaling, scroll access to the map, persistent selection
+highlights, and nested/grouped selections. Packaging tests on
+macOS validate the bundle icon, archived resources, and code-signature seal. Invalid UTF-8 filesystem names are
 tested on Linux; macOS filesystems may reject creation of such names.
 
 `cargo test` does not validate real provider behavior, operating-system dialogs,

@@ -92,5 +92,8 @@
   "file_one": "Datei",
   "file_few": "Dateien",
   "file_many": "Dateien",
-  "file_other": "Dateien"
+  "file_other": "Dateien",
+  "expand": "Aufklappen",
+  "collapse": "Zuklappen",
+  "selected_item": "Ausgewähltes Objekt"
 }
