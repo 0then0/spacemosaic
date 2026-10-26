@@ -222,7 +222,9 @@ impl ExplorerApp {
                 if weight == 0 || (!self.query.is_empty() && node.kind == Kind::Directory) {
                     continue;
                 }
-                if self.map_objects.len() < 95 && weight as f64 >= total * 0.015 {
+                if self.map_objects.len() < 95
+                    && (self.map_group.is_some() || weight as f64 >= total * 0.015)
+                {
                     self.map_objects.push(Some(index));
                     self.map_weights.push(weight as f64);
                 } else {
@@ -1001,6 +1003,8 @@ mod tests {
         app.dirty = true;
         app.refresh_rows();
         assert_eq!(app.rows.len(), grouped_count);
+        assert_eq!(app.map_objects.len(), 96);
+        assert!(app.grouped.len() < grouped_count);
         assert_eq!(app.selected, Some(1000));
     }
 }
