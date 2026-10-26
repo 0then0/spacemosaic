@@ -357,6 +357,11 @@ pub fn scan(
             }
         }
     }
+    finish(&mut result, started, progress);
+    result
+}
+
+fn finish(result: &mut ScanResult, started: Instant, progress: &Mutex<Progress>) {
     // Parent IDs precede descendants, so a reverse pass aggregates without recursion.
     for index in (0..result.nodes.len()).rev() {
         if result.nodes[index].kind == Kind::Directory
@@ -383,7 +388,6 @@ pub fn scan(
         known_bytes: result.nodes[0].logical.known,
         errors: result.errors,
     };
-    result
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -416,7 +420,9 @@ impl ScanResult {
             .filter_map(|(i, n)| {
                 (i != 0
                     && (!files_only || n.kind == Kind::File)
-                    && (query.is_empty() || n.locator.to_lowercase().contains(&query)))
+                    && (query.is_empty()
+                        || n.name.to_lowercase().contains(&query)
+                        || n.locator.to_lowercase().contains(&query)))
                 .then_some(i)
             })
             .collect();
@@ -495,14 +501,168 @@ impl ScanResult {
     }
 }
 
+/// A metadata-only directory cursor. Implementations keep at most one native
+/// cursor open; traversal, limits, aggregation, and cancellation remain in Rust.
+pub trait Storage: Send {
+    fn root(&self) -> Node;
+    fn open_directory(&mut self, locator: &str) -> Result<(), String>;
+    fn next_entry(&mut self) -> Result<Option<Node>, String>;
+    fn close_directory(&mut self);
+    fn interrupt(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
+}
+
+pub fn scan_storage(
+    storage: &mut dyn Storage,
+    options: Options,
+    cancel: &AtomicBool,
+    progress: &Mutex<Progress>,
+) -> ScanResult {
+    use std::collections::HashSet;
+    let started = Instant::now();
+    let mut root = storage.root();
+    root.parent = None;
+    root.path = None;
+    let mut seen = HashSet::from([root.locator.clone()]);
+    let mut result = ScanResult {
+        schema_version: 1,
+        started_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        elapsed_millis: 0,
+        scope: root.locator.clone(),
+        cancelled: false,
+        limited: false,
+        cross_filesystems: false,
+        errors: 0,
+        nodes: vec![root],
+    };
+    let mut stack = vec![0];
+    let mut memory = std::mem::size_of::<Node>() + result.scope.len() * 3;
+    if memory > options.memory_limit {
+        result.limited = true;
+        stack.clear();
+    }
+    let mut known = 0_u64;
+    let mut published = Instant::now();
+    'walk: while let Some(parent) = stack.pop() {
+        if cancel.load(Ordering::Relaxed) {
+            result.cancelled = true;
+            break;
+        }
+        if let Err(error) = storage.open_directory(&result.nodes[parent].locator) {
+            if error == "cancelled" || cancel.load(Ordering::Relaxed) {
+                result.cancelled = true;
+                break;
+            }
+            fail(&mut result.nodes[parent], error);
+            result.errors += 1;
+            storage.close_directory();
+            continue;
+        }
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                result.cancelled = true;
+                break 'walk;
+            }
+            let mut child = match storage.next_entry() {
+                Ok(Some(child)) => child,
+                Ok(None) => {
+                    result.nodes[parent].complete = true;
+                    break;
+                }
+                Err(error) => {
+                    if error == "cancelled" || cancel.load(Ordering::Relaxed) {
+                        result.cancelled = true;
+                        break 'walk;
+                    }
+                    fail(&mut result.nodes[parent], error);
+                    result.errors += 1;
+                    break;
+                }
+            };
+            if result.nodes.len() >= options.node_limit.max(1) {
+                result.limited = true;
+                break 'walk;
+            }
+            child.parent = Some(parent);
+            child.path = None;
+            if child.kind == Kind::Directory {
+                child.logical = Measure::default();
+                child.allocated = Measure::default();
+                child.complete = false;
+                if !seen.insert(child.locator.clone()) {
+                    fail(&mut child, "provider_cycle".into());
+                }
+            } else if child.kind == Kind::Link {
+                child.logical = Measure::value(None);
+                child.allocated = Measure::value(None);
+            }
+            memory = memory.saturating_add(
+                std::mem::size_of::<Node>()
+                    + child.name.len()
+                    + child.locator.len() * 2
+                    + child.native_locator.len(),
+            );
+            if memory > options.memory_limit {
+                result.limited = true;
+                break 'walk;
+            }
+            if child.error.is_some() {
+                child.complete = false;
+                result.errors += 1;
+            }
+            known = known.saturating_add(child.logical.known);
+            let index = result.nodes.len();
+            if child.kind == Kind::Directory && child.error.is_none() {
+                stack.push(index);
+            }
+            result.nodes.push(child);
+            if published.elapsed() >= Duration::from_millis(100) {
+                *progress.lock().unwrap_or_else(|p| p.into_inner()) = Progress {
+                    objects: result.nodes.len(),
+                    known_bytes: known,
+                    errors: result.errors,
+                };
+                published = Instant::now();
+            }
+        }
+        storage.close_directory();
+    }
+    storage.close_directory();
+    finish(&mut result, started, progress);
+    result
+}
+
+struct Cancellation {
+    flag: AtomicBool,
+    interrupt: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+impl Cancellation {
+    fn cancel(&self) {
+        if !self.flag.swap(true, Ordering::Relaxed)
+            && let Some(interrupt) = &self.interrupt
+        {
+            interrupt();
+        }
+    }
+}
+
+enum Source {
+    Local(PathBuf),
+    Provider(Box<dyn Storage>),
+}
+
 pub struct Job {
     pub progress: Arc<Mutex<Progress>>,
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<Cancellation>,
     receiver: Receiver<ScanResult>,
 }
 impl Job {
     pub fn cancel(&self) {
-        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel.cancel();
     }
     pub fn take(&self) -> Option<ScanResult> {
         self.receiver.try_recv().ok()
@@ -514,16 +674,16 @@ impl Drop for Job {
     }
 }
 struct Task {
-    path: PathBuf,
+    source: Source,
     options: Options,
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<Cancellation>,
     progress: Arc<Mutex<Progress>>,
     sender: SyncSender<ScanResult>,
 }
 #[derive(Default)]
 struct Queue {
     pending: Option<Task>,
-    active: Option<Arc<AtomicBool>>,
+    active: Option<Arc<Cancellation>>,
     stopped: bool,
 }
 pub struct Service {
@@ -537,7 +697,7 @@ impl Default for Service {
             .name("storage-scan".into())
             .spawn(move || {
                 loop {
-                    let task = {
+                    let mut task = {
                         let (lock, wake) = &*thread_queue;
                         let mut state = lock.lock().unwrap_or_else(|p| p.into_inner());
                         while state.pending.is_none() && !state.stopped {
@@ -550,7 +710,17 @@ impl Default for Service {
                         state.active = Some(task.cancel.clone());
                         task
                     };
-                    let result = scan(&task.path, task.options, &task.cancel, &task.progress);
+                    let result = match &mut task.source {
+                        Source::Local(path) => {
+                            scan(path, task.options, &task.cancel.flag, &task.progress)
+                        }
+                        Source::Provider(storage) => scan_storage(
+                            storage.as_mut(),
+                            task.options,
+                            &task.cancel.flag,
+                            &task.progress,
+                        ),
+                    };
                     let _ = task.sender.try_send(result);
                     thread_queue
                         .0
@@ -565,18 +735,33 @@ impl Default for Service {
 }
 impl Service {
     pub fn start(&self, path: PathBuf, options: Options) -> Job {
+        self.enqueue(Source::Local(path), options, None)
+    }
+    pub fn start_storage(&self, storage: Box<dyn Storage>, options: Options) -> Job {
+        let interrupt = storage.interrupt();
+        self.enqueue(Source::Provider(storage), options, interrupt)
+    }
+    fn enqueue(
+        &self,
+        source: Source,
+        options: Options,
+        interrupt: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Job {
         let (sender, receiver) = mpsc::sync_channel(1);
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(Cancellation {
+            flag: AtomicBool::new(false),
+            interrupt,
+        });
         let progress = Arc::new(Mutex::new(Progress::default()));
         let mut state = self.queue.0.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(active) = &state.active {
-            active.store(true, Ordering::Relaxed);
+            active.cancel();
         }
         if let Some(pending) = &state.pending {
-            pending.cancel.store(true, Ordering::Relaxed);
+            pending.cancel.cancel();
         }
         state.pending = Some(Task {
-            path,
+            source,
             options,
             cancel: cancel.clone(),
             progress: progress.clone(),
@@ -595,7 +780,7 @@ impl Drop for Service {
         let mut state = self.queue.0.lock().unwrap_or_else(|p| p.into_inner());
         state.stopped = true;
         if let Some(active) = &state.active {
-            active.store(true, Ordering::Relaxed);
+            active.cancel();
         }
         self.queue.1.notify_one();
     }
@@ -604,11 +789,6 @@ impl Drop for Service {
 /// Replace an export only after the complete new file has been written successfully.
 pub fn write_export(result: &ScanResult, destination: &Path, json: bool) -> std::io::Result<()> {
     use std::io::Write;
-    let bytes = if json {
-        result.json().map_err(std::io::Error::other)?
-    } else {
-        result.csv().into_bytes()
-    };
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
     let serial = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -620,7 +800,14 @@ pub fn write_export(result: &ScanResult, destination: &Path, json: bool) -> std:
             .write(true)
             .create_new(true)
             .open(&temporary)?;
-        file.write_all(&bytes)?;
+        let mut writer = std::io::BufWriter::new(&mut file);
+        if json {
+            serde_json::to_writer_pretty(&mut writer, result).map_err(std::io::Error::other)?;
+        } else {
+            writer.write_all(result.csv().as_bytes())?;
+        }
+        writer.flush()?;
+        drop(writer);
         file.sync_all()?;
         drop(file);
         fs::rename(&temporary, destination)

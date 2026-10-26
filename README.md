@@ -12,10 +12,11 @@ Choose a folder, inspect its directory tree, and compare large files using an
 interactive space map. Files stay on your computer; the application never
 reads their contents to calculate sizes.
 
-**Development status:** desktop alpha. Android and iOS include native folder
-access and an accessible metadata browser, but do not yet provide recursive
-analysis or export. Mobile build checks are separate from runtime and device
-verification. See [platform support](docs/testing.md).
+**Development status:** alpha. Desktop and mobile share the Rust scan model,
+recursive aggregation, treemap, and exports. Android and iOS use native storage
+providers and offer a native result browser alongside the canvas. Mobile
+runtime and device acceptance remain unverified; build checks are separate
+from those checks. See [platform support](docs/testing.md).
 
 ## Explore storage
 
@@ -69,9 +70,11 @@ metadata observation, not an atomic snapshot. Permission failures, disappearing
 files, cancellation, numeric overflow, and resource limits remain visible as
 partial or unknown results.
 
-Each scan is limited to 500,000 objects and an estimated 256 MiB metadata
-budget. This budget is a guard on stored node data, not a process-RSS guarantee.
-Filtering, font atlases, the UI, and export buffers require additional memory.
+Desktop scans are limited to 500,000 objects and an estimated 256 MiB metadata
+budget; mobile scans use 100,000 objects and 64 MiB. Reaching either limit leaves
+an explicit partial result. These budgets guard stored node data, not total
+process memory. Provider cursors, filtering, font atlases, and the UI require
+additional memory. JSON exports stream to a temporary file before saving.
 
 ## Build and run
 
@@ -87,9 +90,9 @@ cargo run --release --locked -- /path/to/folder
 Desktop targets are Windows with MSVC, macOS, and Linux with X11/Wayland.
 Linux builds require a C/C++ compiler, pkg-config, libxkbcommon, Wayland, and EGL
 development packages. The CI workflow includes the Ubuntu package list.
-The full application is currently runtime-verified on macOS arm64 only. Linux,
-Android APK, and iOS simulator/device builds have passed CI; see the latest
-workflow for Windows verification and current artifact downloads.
+The full application is currently runtime-verified on macOS arm64 only.
+Windows, Linux, macOS, Android APK, and iOS simulator/device builds have passed
+CI. Check the latest workflow for the current commit and artifact downloads.
 
 To package a desktop build:
 
@@ -111,17 +114,27 @@ Verify downloads with `shasum -a 256 -c <manifest>` or, on Windows,
 ## Mobile development
 
 Mobile applications use native eframe rendering and platform bridges, without
-WebView. They can inspect up to 32 immediate children of a selected folder.
-The native **Accessible folder browser** provides system controls and a text
-list independently of the egui canvas. VoiceOver and TalkBack behavior still
-requires real simulator/device testing; native controls alone are not a
-conformance claim.
+WebView. Rust recursively visits the selected tree using native metadata
+cursors, with at most 32 entries and 256 KiB in each bridge response. This page
+size does not limit the tree to 32 objects. Cancel stops further traversal and
+retains a partial result; rescanning replaces the previous session.
+
+The native **Accessible folder browser** reads the completed Rust result in
+pages. It provides directory navigation, search, sorting, largest files,
+file-type statistics, object details, copying/opening, and JSON/CSV export.
+Its system controls provide an alternative to the egui canvas. VoiceOver and
+TalkBack still require simulator/device testing; native controls alone are not
+a conformance claim.
 
 Android uses the Storage Access Framework and `DocumentsContract` with content
 URIs. It requests read access only, retains a persistable grant when offered,
 and handles provider failures. It does not request `MANAGE_EXTERNAL_STORAGE`,
-access private application data, or promise a whole-device scan. Grant
-restoration after restarting the application is not implemented.
+access private application data, or promise a whole-device scan. On restart,
+it restores the last retained tree only if the OS still grants read access.
+Revocation is reported explicitly. SAF providers expose logical sizes only;
+missing sizes remain unknown. Providers that report loading or incomplete
+listings produce a partial result rather than an apparently complete total.
+SAF does not expose reliable inode, hard-link, or filesystem-boundary identities.
 
 ```sh
 rustup target add aarch64-linux-android x86_64-linux-android
@@ -133,14 +146,24 @@ adb install -r dist/spacemosaic-debug.apk
 adb shell am start -n dev.spacemosaic/dev.spacemosaic.StorageActivity
 ```
 
-Minimum Android API: 26. The Gradle 8.13 wrapper and Android Gradle Plugin 8.13.0
+Minimum Android API: 26. The Gradle 9.8.2 wrapper and Android Gradle Plugin 9.4.1
 are pinned. Developers accept SDK licenses when setting up their environment.
 The APK uses a locally generated debug key, without personal signing secrets.
 
 iOS uses the system document picker, security-scoped access, file coordination,
 and immediately available metadata. Access is limited to the selected provider
-folder and is released when the listing finishes. Bookmarks are not retained.
+folder. A scan retains security-scoped access until traversal ends or is
+cancelled, then releases it. Rescanning reacquires access to the selected URL
+within the current application session; bookmarks are not retained across
+restarts. Symbolic links and aliases are not followed. Available allocation
+metadata and hard-link counts do not establish unique APFS block ownership.
 A full Xcode installation, iOS SDK, and Apple Silicon Mac are required.
+
+Both platforms save JSON and CSV through the system document picker. An export
+uses an application-private temporary file, which is removed after completion,
+cancellation, or a reported failure. Cancelling the save dialog is distinct
+from a failed write. Source files are never modified. Cloud-only entries are
+not downloaded to measure their contents; unavailable metadata stays unknown.
 
 ```sh
 rustup target add aarch64-apple-ios-sim aarch64-apple-ios

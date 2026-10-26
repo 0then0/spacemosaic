@@ -3,6 +3,8 @@ pub mod bridge;
 #[cfg(feature = "gui")]
 mod fonts;
 pub mod i18n;
+pub mod mobile;
+pub mod provider;
 pub mod scan;
 #[cfg(feature = "gui")]
 pub mod theme;

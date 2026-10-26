@@ -35,6 +35,7 @@ pub struct ExplorerApp {
     job: Option<scan::Job>,
     result: Option<Arc<ScanResult>>,
     scope: Option<PathBuf>,
+    provider_scope: Option<(u64, String)>,
     directory: usize,
     selected: Option<usize>,
     page: Page,
@@ -48,7 +49,7 @@ pub struct ExplorerApp {
     preview: Option<Listing>,
     mobile_busy: bool,
     notice: Option<&'static str>,
-    export: Option<mpsc::Receiver<bool>>,
+    export: Option<mpsc::Receiver<crate::mobile::ExportOutcome>>,
     map_group: Option<Vec<usize>>,
     map_objects: Vec<Option<usize>>,
     map_selected: Option<usize>,
@@ -79,6 +80,7 @@ impl ExplorerApp {
             job: None,
             result: None,
             scope: None,
+            provider_scope: None,
             directory: 0,
             selected: None,
             page: Page::Directory,
@@ -125,6 +127,46 @@ impl ExplorerApp {
         self.dirty = true;
         self.map_group = None;
     }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    fn start_provider(&mut self, generation: u64, root: String) {
+        let provider =
+            crate::provider::Provider::new(root.clone(), generation, crate::mobile::transport());
+        let job = self.service.start_storage(
+            Box::new(provider),
+            scan::Options {
+                node_limit: 100_000,
+                memory_limit: 64 * 1024 * 1024,
+                ..Default::default()
+            },
+        );
+        crate::mobile::scanning(generation, job.progress.clone());
+        self.job = Some(job);
+        self.provider_scope = Some((generation, root));
+        self.scope = None;
+        self.result = None;
+        self.selected = None;
+        self.directory = 0;
+        self.rows.clear();
+        self.tree_rows.clear();
+        self.children.clear();
+        self.children_sort = None;
+        self.expanded = HashSet::from([0]);
+        self.extensions.clear();
+        self.query.clear();
+        self.notice = None;
+        self.map_group = None;
+        self.dirty = true;
+    }
+    fn rescan(&mut self) {
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        if let Some((generation, root)) = self.provider_scope.clone() {
+            self.start_provider(generation, root);
+        }
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        if let Some(path) = self.scope.clone() {
+            self.start(path);
+        }
+    }
     fn choose(&mut self) {
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         if let Some(path) = rfd::FileDialog::new().pick_folder() {
@@ -133,6 +175,9 @@ impl ExplorerApp {
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             let generation = bridge::begin();
+            self.job = None;
+            self.result = None;
+            self.provider_scope = None;
             self.preview = None;
             self.notice = None;
             #[cfg(target_os = "android")]
@@ -295,20 +340,93 @@ impl ExplorerApp {
         self.dirty = false;
     }
     fn poll(&mut self, context: &egui::Context) {
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            if self
+                .provider_scope
+                .as_ref()
+                .is_some_and(|(generation, _)| !bridge::is_current(*generation))
+            {
+                self.job = None;
+                self.result = None;
+                self.provider_scope = None;
+            }
+            if let Some(command) = crate::mobile::take_command() {
+                use crate::mobile::Command;
+                match command {
+                    Command::Rescan => self.rescan(),
+                    Command::Cancel => {
+                        if let Some(job) = &self.job {
+                            job.cancel();
+                        }
+                    }
+                    Command::Export(json) => {
+                        if self.export.is_none() {
+                            self.save(json);
+                        }
+                    }
+                    Command::Back => self.back(),
+                    Command::Allocated(allocated) => {
+                        self.allocated = allocated;
+                        self.dirty = true;
+                    }
+                    Command::Language(index) => {
+                        self.language = if index < i18n::TAGS.len() {
+                            index
+                        } else {
+                            i18n::system_language()
+                        };
+                    }
+                    Command::Appearance(index) => {
+                        if let Some(appearance) = Appearance::ALL.get(index) {
+                            self.appearance = *appearance;
+                            context.set_theme(appearance.preference());
+                        }
+                    }
+                    Command::Navigate(index) | Command::Select(index) => {
+                        if let Some(node) = self.result.as_ref().and_then(|r| r.nodes.get(index)) {
+                            if matches!(command, Command::Navigate(_))
+                                && node.kind == Kind::Directory
+                            {
+                                self.navigate(index);
+                            } else {
+                                self.select(index);
+                            }
+                        }
+                    }
+                }
+            }
+            crate::mobile::focus(self.directory, self.map_group.is_some());
+        }
         if let Some(result) = self.job.as_ref().and_then(scan::Job::take) {
             self.extensions = result.extensions();
-            self.result = Some(Arc::new(result));
+            let result = Arc::new(result);
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            if let Some((generation, _)) = &self.provider_scope {
+                crate::mobile::publish(*generation, result.clone());
+            }
+            self.result = Some(result);
             self.job = None;
             self.dirty = true;
         }
         if let Some(listing) = bridge::take() {
-            self.preview = Some(listing);
             self.mobile_busy = false;
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            if listing.status == bridge::Status::Ready
+                && let Some(root) = &listing.scope
+            {
+                self.start_provider(listing.generation, root.clone());
+            }
+            self.preview = Some(listing);
         }
         if let Some(receiver) = &self.export
             && let Ok(success) = receiver.try_recv()
         {
-            self.notice = Some(if success { "exported" } else { "export_failed" });
+            self.notice = Some(match success {
+                crate::mobile::ExportOutcome::Saved => "exported",
+                crate::mobile::ExportOutcome::Cancelled => "export_cancelled",
+                crate::mobile::ExportOutcome::Failed => "export_failed",
+            });
             self.export = None;
         }
         if self.job.is_some() || self.mobile_busy || self.export.is_some() {
@@ -332,13 +450,22 @@ impl ExplorerApp {
             let (sender, receiver) = mpsc::sync_channel(1);
             self.export = Some(receiver);
             std::thread::spawn(move || {
-                let _ = sender.send(scan::write_export(&result, &path, json).is_ok());
+                let outcome = if scan::write_export(&result, &path, json).is_ok() {
+                    crate::mobile::ExportOutcome::Saved
+                } else {
+                    crate::mobile::ExportOutcome::Failed
+                };
+                let _ = sender.send(outcome);
             });
         }
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
-            let _ = json;
-            self.notice = Some("mobile_export_unavailable");
+            if let Some(result) = self.result.clone() {
+                self.export = crate::mobile::export(result, json);
+                if self.export.is_none() {
+                    self.notice = Some("export_failed");
+                }
+            }
         }
     }
     fn settings(&mut self, ui: &mut egui::Ui) {
@@ -372,6 +499,9 @@ impl ExplorerApp {
                 egui::ComboBox::from_id_salt("application-language")
                     .selected_text(i18n::TAGS[self.language])
                     .show_ui(ui, |ui| {
+                        if ui.selectable_label(false, t("system")).clicked() {
+                            self.language = i18n::system_language();
+                        }
                         for (index, tag) in i18n::TAGS.iter().enumerate() {
                             ui.selectable_value(&mut self.language, index, *tag);
                         }
@@ -388,8 +518,11 @@ impl ExplorerApp {
                             .set_zoom_factor((ui.ctx().zoom_factor() + 0.15).min(2.5));
                     }
                 });
-                ui.checkbox(&mut self.cross_filesystems, t("cross_filesystems"));
-                ui.label(t("mount_policy"));
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                {
+                    ui.checkbox(&mut self.cross_filesystems, t("cross_filesystems"));
+                    ui.label(t("mount_policy"));
+                }
             });
     }
     fn header(&mut self, ui: &mut egui::Ui) {
@@ -416,13 +549,13 @@ impl ExplorerApp {
                     }
                     if ui
                         .add_enabled(
-                            self.scope.is_some() && self.job.is_none(),
+                            (self.scope.is_some() || self.provider_scope.is_some())
+                                && self.job.is_none(),
                             egui::Button::new(t("rescan")),
                         )
                         .clicked()
-                        && let Some(path) = &self.scope
                     {
-                        self.start(path.clone());
+                        self.rescan();
                     }
                     if (self.job.is_some() || self.mobile_busy) && ui.button(t("cancel")).clicked()
                     {
@@ -941,10 +1074,23 @@ impl ExplorerApp {
                 }
                 ui.horizontal_wrapped(|ui| {
                     if ui.button(t("copy_path")).clicked() {
+                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
                         ui.ctx().copy_text(node.locator.clone());
+                        #[cfg(any(target_os = "android", target_os = "ios"))]
+                        {
+                            let _ = crate::mobile::request(
+                                serde_json::json!({"op":"copy", "locator":node.locator}),
+                            );
+                        }
                     }
                     if node.kind == Kind::Directory && ui.button(t("open_folder")).clicked() {
                         self.navigate(index);
+                    }
+                    #[cfg(any(target_os = "android", target_os = "ios"))]
+                    if ui.button(t("reveal")).clicked() {
+                        let _ = crate::mobile::request(
+                            serde_json::json!({"op":"view", "locator":node.locator}),
+                        );
                     }
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
                     if let Some(path) = &node.path
@@ -1081,6 +1227,8 @@ impl ExplorerApp {
                     .inner_margin(egui::Margin::same(16)),
             )
             .show(ui, |ui| {
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                ui.set_max_height((ui.available_height() - 80.0).max(0.0));
                 let desktop = ui.available_width() >= 700.0 && ui.available_height() >= 600.0;
                 if desktop {
                     ui.spacing_mut().interact_size.y = 30.0;
@@ -1137,7 +1285,9 @@ impl ExplorerApp {
                             ui.label(RichText::new(t("privacy_note")).weak());
                         }
                         #[cfg(any(target_os = "android", target_os = "ios"))]
-                        self.mobile_preview(ui);
+                        if self.result.is_none() && self.job.is_none() {
+                            self.mobile_preview(ui);
+                        }
                     });
             });
         self.settings_window(ui.ctx());

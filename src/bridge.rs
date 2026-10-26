@@ -106,7 +106,21 @@ fn mailbox() -> &'static Mutex<Mailbox> {
 }
 
 pub fn begin() -> u64 {
-    mailbox().lock().unwrap_or_else(|p| p.into_inner()).begin()
+    let generation = mailbox().lock().unwrap_or_else(|p| p.into_inner()).begin();
+    crate::mobile::clear(generation);
+    wake();
+    generation
+}
+pub fn generation() -> u64 {
+    mailbox()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .generation
+}
+pub fn wake() {
+    if let Some(wake) = waker().lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+        wake();
+    }
 }
 
 pub fn is_current(generation: u64) -> bool {

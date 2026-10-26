@@ -12,8 +12,11 @@
 - Versioned JSON exports and CSV file-type summaries through system save dialogs.
 - System, light, and dark appearance with a restrained neutral visual style.
 - Seven interface languages and a bundled offline Japanese font.
-- Native Android SAF and iOS document-picker metadata access, including native
-  accessible browser controls. Recursive mobile analysis remains unavailable.
+- Recursive Android SAF and iOS document-picker analysis through bounded native
+  metadata cursors, with cancellation, unknown sizes, and explicit partial results.
+- Native mobile result browsing with paging, directory navigation, search, largest
+  files, file-type summaries, settings, and system JSON/CSV export.
+- Android retained-grant restoration and iOS scoped access for repeated scans.
 - Pinned dependencies, desktop/mobile CI build checks, artifact packaging, and
   SHA-256 manifests.
 
@@ -39,7 +42,11 @@
 - iOS Rust builds request a static library instead of prematurely linking Swift
   symbols into a dynamic library.
 - iOS picker presentation supports the legacy window lifecycle used by winit.
-- Native metadata results use the same generation checks as the Rust UI.
+- Native metadata results use the same generation checks as the Rust UI;
+  separate scan IDs prevent stale cursor cleanup from interrupting a rescan.
+- Search matches file names even when opaque provider URIs do not contain them.
+- Save cancellation remains distinct from failure; export temporary files are
+  removed after completion, and JSON serialization streams to disk.
 
 No release has been published. See the platform verification documentation for
 build and runtime coverage.

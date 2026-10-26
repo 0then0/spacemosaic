@@ -5,12 +5,13 @@ of evidence. Platform badges and release notes must not combine them.
 
 ## Current support
 
-The desktop application builds and runs on macOS arm64. Linux desktop builds,
+The desktop application builds and runs on macOS arm64. Windows, macOS, Linux,
 Android APK packaging, and iOS simulator/device builds have passed GitHub
-Actions. Windows has a CI build job; its verification is tracked by the current
-workflow status. Desktop runtime outside macOS, mobile picker/lifecycle behavior,
-screen readers, and physical devices still require verification. They expose
-metadata browsing rather than the desktop application's recursive analysis.
+Actions. Consult the current workflow for each commit. Desktop runtime outside
+macOS, mobile picker/lifecycle behavior, screen readers, and physical devices
+still require verification. Recursive mobile analysis and native export are
+implemented; host tests cover their Rust model and bridge protocol, not real
+provider acceptance.
 
 Current build outcomes and downloadable artifacts are recorded in
 [GitHub Actions](https://github.com/0then0/spacemosaic/actions/workflows/ci.yml).
@@ -37,7 +38,17 @@ sorting, JSON/CSV export, treemap geometry, hit regions, theme selection and
 contrast, translation-key completeness, tree expansion/selection, desktop
 tree/map placement, and pointer-based language selection. Regression checks
 exercise resizing, text scaling, scroll access to the map, persistent selection
-highlights, and nested/grouped selections. Packaging tests on
+highlights, and nested/grouped selections.
+
+Provider fixtures exercise recursive multi-page traversal, opaque URI export,
+unknown sizes, incomplete provider pages, denied children, cycles, resource
+limits, cancellation before cursor registration, blocked cursor interruption,
+and late cleanup from an older scan. Native result tests cover paging, adaptive
+byte limits, filename search independent of URI syntax, stale commands, and
+save cancellation/temporary-file cleanup. These tests use synthetic transports;
+they do not substitute for native integration tests.
+
+Packaging tests on
 macOS validate the bundle icon, archived resources, and code-signature seal. Invalid UTF-8 filesystem names are
 tested on Linux; macOS filesystems may reject creation of such names.
 
@@ -65,9 +76,20 @@ a file without an extension, and long/non-Latin names. Verify:
 
 For Android and iOS, separately verify picker cancellation, revoked access,
 offline/unavailable providers, background/foreground, rotation, and repeated
-selection. Use TalkBack/VoiceOver to open the native accessible browser, choose
-a scope, read status and metadata, and close it. Do not infer success from
-native widget types or a syntactically valid bridge.
+selection. Include more than 32 immediate children and several nested folders;
+compare totals, largest files, file types, and exported JSON against the fixture.
+Cancel a scan while a provider query is blocked, then start a new selection and
+rescan it. Verify that late callbacks neither replace results nor close the new
+cursor. Test missing sizes, loading/incomplete responses, and cloud-only files
+without triggering downloads. Confirm restored Android grants and revoked grants
+on restart; on iOS verify balanced access across repeated scans.
+
+Save JSON and CSV to a local and provider destination. Cancel the save picker,
+exercise a failed write, and confirm that a partial write is not reported as
+success. Use TalkBack/VoiceOver to choose a scope, read progress, navigate nested
+directories, search, inspect sizes/errors, change settings, and export through
+the native browser. Do not infer success from native widget types or a
+syntactically valid bridge.
 
 ## Reproducing mobile builds
 

@@ -6,10 +6,12 @@ multi-crate framework.
 
 ## Rust modules
 
-- `scan`: local metadata traversal, aggregate size measures, bounded background
+- `scan`: local and provider metadata traversal, aggregate size measures, bounded background
   scheduling, result filtering, file-type summaries, and export.
 - `treemap`: squarified rectangle layout and hit testing, independent of egui.
-- `bridge`: bounded native metadata messages and generation-based isolation.
+- `bridge`: picker acknowledgements and generation-based isolation.
+- `provider`: bounded native metadata pages behind the `scan::Storage` cursor.
+- `mobile`: paged result access, native commands, and asynchronous save handoff.
 - `i18n`: embedded catalogs, language negotiation, and display formatting.
 - `theme`: paired light/dark palettes and the system-theme preference.
 - `ui`: navigation, shared selection, controls, and rendering.
@@ -18,8 +20,10 @@ One scanner worker processes requests. At most one replacement request waits;
 submitting another cancels the active session and replaces the pending request.
 Each job has its own result channel, cancellation token, and progress snapshot.
 The UI only polls its current job, so an old result cannot replace a new one.
-Blocking filesystem calls cannot be forcibly interrupted; the worker checks
-cancellation between operations. Progress publication is throttled to 100 ms.
+Desktop filesystem calls cannot be forcibly interrupted; the worker checks
+cancellation between operations. Native providers additionally cancel Android
+query signals or iOS file coordination. Providers may still take time to return.
+Progress publication is throttled to 100 ms.
 
 Nodes have stable indices within a result, with parent indices preceding
 children. A reverse pass aggregates size measures without recursive stack use.
@@ -40,16 +44,37 @@ portal backend rather than a bundled GTK application. File-manager actions
 invoke fixed system applications with argument arrays, never shell command
 strings assembled from file names.
 
-Android uses a `NativeActivity` bridge with SAF tree selection, content URIs,
-read-only grants, a single metadata executor, and a cancellation signal. iOS
-uses UIKit document picking, security-scoped access, metadata-only file
-coordination, and a temporary file presenter. Picker presentation supports both
-scene windows and the legacy window used by winit 0.30.
+Android uses a `NativeActivity` bridge with SAF tree selection, opaque content
+URIs, read-only grants, and query cancellation signals. Retained grants are
+checked before restoring the last selected tree. iOS uses UIKit document
+picking, balanced security-scoped access, immediately available metadata-only
+file coordination, and a temporary file presenter. Picker presentation supports
+both scene windows and the legacy window used by winit 0.30.
 
-Mobile listings are bounded to 32 immediate children and 256 KiB per response.
-They are not recursive scans. Native list controls provide an alternative to
-the canvas for the implemented mobile scope. The Rust receiver decides whether
-a result belongs to the current generation before either UI displays it.
+Rust controls recursive traversal through `scan::Storage`. Each native cursor
+opens one directory and returns pages of at most 32 entries and 256 KiB. Rust
+aggregates directory sizes from children, retains unknown values and partial
+errors, rejects repeated directory locators, and never follows reported links.
+Provider URIs remain opaque; Android URIs are never converted to POSIX paths.
+Provider identity cannot prove unique block ownership or enforce desktop mount
+boundaries. Android allocation sizes remain unknown.
+
+Picker generations isolate selections; distinct monotonic scan IDs also
+isolate rescans of the same selection. Late close/cancel callbacks cannot
+terminate a newer cursor. Cancellation is recorded before cursor registration
+to cover races with queued work. Mobile metadata storage is capped at 100,000
+nodes and an estimated 64 MiB, independently of the bounded page protocol.
+
+Native list controls page through the same completed Rust result. They do not
+walk storage separately. Requests run off the main thread and coalesce during
+search or progress updates. Native commands have a bounded queue and reject
+stale picker generations and result-row actions during rescanning.
+
+Exports stream JSON or write the CSV summary to an app-private temporary file.
+Android uses `ACTION_CREATE_DOCUMENT` and copies only this export to the
+selected output URI. iOS uses a document export picker. Completion, cancellation,
+and failure have separate outcomes; matching callbacks remove temporary files.
+No source-provider content is read or modified by export.
 
 ## Themes and accessibility
 

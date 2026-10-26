@@ -56,3 +56,52 @@ pub fn configure(appearance: i32, language: &str) {
         unsafe { spacemosaic_configure(appearance, language.as_ptr()) };
     }
 }
+
+unsafe extern "C" {
+    fn spacemosaic_provider(request: *const std::ffi::c_char) -> *mut std::ffi::c_char;
+    fn spacemosaic_provider_free(response: *mut std::ffi::c_char);
+}
+pub fn request(request: &str) -> Result<String, String> {
+    let request = std::ffi::CString::new(request).map_err(|_| "metadata_unavailable")?;
+    // SAFETY: Swift returns an owned, NUL-terminated UTF-8 allocation. Copy it
+    // before invoking the matching native deallocator, on every return path.
+    unsafe {
+        let response = spacemosaic_provider(request.as_ptr());
+        if response.is_null() {
+            return Err("provider_unavailable".into());
+        }
+        let result = std::ffi::CStr::from_ptr(response)
+            .to_str()
+            .map(str::to_owned)
+            .map_err(|_| "metadata_unavailable".to_owned());
+        spacemosaic_provider_free(response);
+        result
+    }
+}
+/// # Safety
+/// `request` points to a readable NUL-terminated UTF-8 string for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spacemosaic_result_page(
+    request: *const std::ffi::c_char,
+) -> *mut std::ffi::c_char {
+    if request.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: native caller owns the input buffer for the duration of the call.
+    let request = unsafe { std::ffi::CStr::from_ptr(request) }.to_string_lossy();
+    std::ffi::CString::new(crate::mobile::page(&request))
+        .map(std::ffi::CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+/// # Safety
+/// `value` is null or an allocation returned by `spacemosaic_result_page`, freed once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spacemosaic_free_result(value: *mut std::ffi::c_char) {
+    if !value.is_null() {
+        drop(unsafe { std::ffi::CString::from_raw(value) });
+    }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn spacemosaic_export_done(id: u64, outcome: i32) {
+    crate::mobile::export_complete(id, crate::mobile::ExportOutcome::code(outcome));
+}
