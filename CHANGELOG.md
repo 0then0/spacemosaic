@@ -4,6 +4,10 @@
 
 ### Added
 
+- Clickable file-type column headers with ascending/descending sorting by
+  extension, known size, and file count, plus localized direction labels.
+- Persistent language and appearance preferences, plus desktop window size,
+  position, and maximized state. Restored windows stay on an available monitor.
 - A per-user Windows Setup.exe, built with pinned Inno Setup 7.1.0, including
   Start menu shortcuts and registered uninstall support.
 - Android adaptive, round, and monochrome launcher icons with the project glyph
@@ -11,6 +15,17 @@
 
 ### Fixed
 
+- Unknown sizes no longer display a misleading zero-byte total. Partial scans
+  distinguish cancellation, object limits, and metadata memory limits; incomplete
+  desktop directories can be scanned separately from their object details.
+- Failed preference writes are throttled, reported in the UI, and retried without
+  attempting filesystem writes on every frame.
+- Breadcrumbs use a labeled, horizontally scrolling path bar with separators,
+  unframed ancestor links, and a distinct current folder instead of button rows.
+  On narrow layouts, Back sits above the path to keep it readable with large text.
+- Smaller items opens the complete virtualized group list in one action instead
+  of repeatedly regrouping the remaining items. Search and sorting stay within
+  the group, and Back returns to its map without losing selection.
 - Compact toolbars keep phone actions readable, group export formats in a menu,
   and scroll with content instead of consuming the portrait viewport.
 - Android settings respect status/navigation bars, display cutouts, the keyboard,

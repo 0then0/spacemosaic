@@ -3,6 +3,29 @@ use std::{collections::BTreeMap, sync::OnceLock};
 
 pub const TAGS: [&str; 7] = ["en", "ru", "es", "de", "fr", "ja", "pt-BR"];
 
+/// Format measured bytes without presenting missing metadata as an empty object.
+pub fn measure(language: usize, size: crate::scan::Measure) -> String {
+    if size.overflow {
+        return text(language, "overflow").into();
+    }
+    if size.known == 0 && size.unknown > 0 {
+        return format!(
+            "{} ({})",
+            text(language, "unknown"),
+            integer(language, size.unknown)
+        );
+    }
+    let mut value = bytes(language, size.known);
+    if size.unknown > 0 {
+        value.push_str(&format!(
+            " + {} {}",
+            integer(language, size.unknown),
+            text(language, "unknown")
+        ));
+    }
+    value
+}
+
 fn catalogs() -> &'static [BTreeMap<String, String>; 7] {
     static CATALOGS: OnceLock<[BTreeMap<String, String>; 7]> = OnceLock::new();
     CATALOGS.get_or_init(|| {

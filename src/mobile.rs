@@ -1,4 +1,5 @@
 //! Shared mobile result access, native commands, and system-save handoff.
+use crate::i18n::measure as display_measure;
 use crate::{bridge, provider, scan};
 use serde_json::{Value, json};
 use std::{
@@ -259,7 +260,7 @@ fn result_page(result: &scan::ScanResult, generation: u64, request: &Value) -> V
             let n = &result.nodes[*index];
             json!({"id":index,"name":n.name,"locator":n.locator,"directory":n.kind == scan::Kind::Directory,
                 "size_label":display_measure(language,if request["allocated"].as_bool()==Some(true) {n.allocated} else {n.logical}),"logical_label":display_measure(language,n.logical),"allocated_label":display_measure(language,n.allocated),"hard_link":n.hard_link,
-                "complete":n.complete,"error":n.error})
+                "complete":n.complete,"error":n.error,"scan_note":if n.kind==scan::Kind::Directory && !n.complete {crate::i18n::text(language,"incomplete_directory")} else {""}})
         }).collect();
         (rows.len(), offset, entries)
     };
@@ -267,6 +268,14 @@ fn result_page(result: &scan::ScanResult, generation: u64, request: &Value) -> V
         "scope":result.scope,"summary":format!("{} · {} · {}",crate::i18n::counted(language,result.nodes.len() as u64,"object"),display_measure(language,result.nodes[0].logical),crate::i18n::counted(language,result.errors,"error")),
         "directory":directory,"parent":result.nodes[directory].parent,"name":result.nodes[directory].name,
         "offset":offset,"total":total});
+    if let Some(reason) = result.incomplete_reason() {
+        let summary = response["summary"].as_str().unwrap_or_default();
+        response["summary"] = json!(format!(
+            "{} · {}",
+            summary,
+            crate::i18n::text(language, reason)
+        ));
+    }
     loop {
         response["next"] = json!(offset + entries.len());
         response["has_more"] = json!(offset + entries.len() < total);
@@ -280,23 +289,7 @@ fn result_page(result: &scan::ScanResult, generation: u64, request: &Value) -> V
         entries.truncate(entries.len() / 2);
     }
 }
-fn display_measure(language: usize, measure: scan::Measure) -> String {
-    if measure.overflow {
-        return crate::i18n::text(language, "overflow").into();
-    }
-    if measure.known == 0 && measure.unknown > 0 {
-        return crate::i18n::text(language, "unknown").into();
-    }
-    let mut text = crate::i18n::bytes(language, measure.known);
-    if measure.unknown > 0 {
-        text.push_str(&format!(
-            " + {} {}",
-            crate::i18n::integer(language, measure.unknown),
-            crate::i18n::text(language, "unknown")
-        ));
-    }
-    text
-}
+
 fn summary(language: usize, objects: usize, known: u64, errors: u64) -> String {
     format!(
         "{} · {} · {}",
@@ -445,6 +438,7 @@ mod tests {
             scope: "content://fixture/root".into(),
             cancelled: false,
             limited: false,
+            limit_reason: None,
             cross_filesystems: false,
             errors: 0,
             nodes,
@@ -481,6 +475,49 @@ mod tests {
             system_dark: false,
         };
         assert_eq!(rotated.margins([2400, 1080]), [90.0, 0.0, 60.0, 168.0]);
+    }
+    #[test]
+    fn native_partial_results_explain_limits_and_do_not_label_unknown_directories_as_empty() {
+        let mut result = result(3);
+        result.limited = true;
+        result.limit_reason = Some(scan::LimitReason::MemoryLimit);
+        result.nodes[0].complete = false;
+        result.nodes[1].kind = scan::Kind::Directory;
+        result.nodes[1].complete = false;
+        result.nodes[1].logical = scan::Measure {
+            unknown: 1,
+            ..Default::default()
+        };
+        for language in crate::i18n::TAGS {
+            let page = result_page(&result, 7, &json!({"language":language}));
+            let index = crate::i18n::TAGS
+                .iter()
+                .position(|tag| *tag == language)
+                .unwrap();
+            assert_eq!(page["status"], "partial");
+            assert!(
+                page["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains(crate::i18n::text(index, "scan_memory_limit"))
+            );
+            let directory = page["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["directory"] == true)
+                .unwrap();
+            assert!(
+                directory["size_label"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(crate::i18n::text(index, "unknown"))
+            );
+            assert_eq!(
+                directory["scan_note"],
+                crate::i18n::text(index, "incomplete_directory")
+            );
+        }
     }
     #[test]
     fn native_results_are_paged_sorted_and_filtered_without_storage_access() {

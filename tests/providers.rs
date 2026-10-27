@@ -144,6 +144,7 @@ fn provider_resource_limits_and_exact_empty_root_are_explicit() {
         },
     );
     assert!(result.limited && !result.nodes[0].complete);
+    assert_eq!(result.limit_reason, Some(scan::LimitReason::NodeLimit));
     assert!(result.nodes[0].logical.unknown > 0);
     let result = run(
         &mut full,
@@ -153,6 +154,7 @@ fn provider_resource_limits_and_exact_empty_root_are_explicit() {
         },
     );
     assert!(result.limited && result.nodes.len() == 1);
+    assert_eq!(result.limit_reason, Some(scan::LimitReason::MemoryLimit));
 }
 #[test]
 fn malformed_and_nonprogressing_pages_are_rejected() {

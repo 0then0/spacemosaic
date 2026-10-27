@@ -72,6 +72,8 @@ fn cancellation_and_memory_limit_keep_explicit_partial_results() {
         &Mutex::new(Progress::default()),
     );
     assert!(result.cancelled);
+    assert_eq!(result.limit_reason, None);
+    assert_eq!(result.incomplete_reason(), Some("scan_cancelled"));
     assert!(!result.nodes[0].complete);
     assert!(result.nodes[0].logical.unknown > 0);
     let limited = f.scan(Options {
@@ -79,6 +81,7 @@ fn cancellation_and_memory_limit_keep_explicit_partial_results() {
         ..Options::default()
     });
     assert!(limited.limited);
+    assert_eq!(limited.limit_reason, Some(scan::LimitReason::NodeLimit));
     assert_eq!(limited.nodes.len(), 3);
     assert!(!limited.nodes[0].complete);
 }
@@ -191,8 +194,50 @@ fn metadata_memory_limit_stops_with_an_explicit_partial_result() {
         ..Options::default()
     });
     assert!(result.limited);
+    assert_eq!(result.limit_reason, Some(scan::LimitReason::MemoryLimit));
     assert!(!result.nodes[0].complete);
     assert!(result.nodes[0].logical.unknown > 0);
+}
+
+#[test]
+fn queued_directories_are_unknown_at_the_limit_and_separate_scans_measure_their_contents() {
+    let fixture = Fixture::new();
+    for name in [".agents", "other"] {
+        fs::create_dir(fixture.0.join(name)).unwrap();
+        fs::write(fixture.0.join(name).join("payload"), vec![1; 125739]).unwrap();
+    }
+    let limited = fixture.scan(Options {
+        node_limit: 3,
+        ..Default::default()
+    });
+    assert_eq!(limited.incomplete_reason(), Some("scan_node_limit"));
+    let directory = limited
+        .nodes
+        .iter()
+        .find(|node| node.name == ".agents")
+        .unwrap();
+    assert!(!directory.complete);
+    assert_eq!(directory.logical.known, 0);
+    assert_eq!(directory.logical.unknown, 1);
+    let result = scan::scan(
+        directory.path.as_ref().unwrap(),
+        Options::default(),
+        &AtomicBool::new(false),
+        &Mutex::new(Progress::default()),
+    );
+    assert!(result.nodes[0].complete);
+    assert_eq!(result.nodes[0].logical.known, 125739);
+    assert_eq!(result.nodes[0].logical.unknown, 0);
+    let complete = fixture.scan(Options::default());
+    assert_eq!(complete.nodes[0].logical.known, 251478);
+    assert_eq!(complete.incomplete_reason(), None);
+    let exported = limited.json().unwrap();
+    let decoded: scan::ScanResult = serde_json::from_slice(&exported).unwrap();
+    assert_eq!(decoded.limit_reason, Some(scan::LimitReason::NodeLimit));
+    let mut legacy: serde_json::Value = serde_json::from_slice(&exported).unwrap();
+    legacy.as_object_mut().unwrap().remove("limit_reason");
+    let legacy: scan::ScanResult = serde_json::from_value(legacy).unwrap();
+    assert_eq!(legacy.incomplete_reason(), Some("scan_limited"));
 }
 #[cfg(unix)]
 #[test]

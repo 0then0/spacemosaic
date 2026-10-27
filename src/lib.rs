@@ -4,6 +4,8 @@ pub mod bridge;
 mod fonts;
 pub mod i18n;
 pub mod mobile;
+#[cfg(feature = "gui")]
+mod preferences;
 pub mod provider;
 pub mod scan;
 #[cfg(feature = "gui")]

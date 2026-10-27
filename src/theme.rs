@@ -1,7 +1,8 @@
 //! Restrained, shadow-free surfaces in system, light, and dark modes.
 use eframe::egui::{self, Color32, Stroke};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Appearance {
     #[default]
     System,

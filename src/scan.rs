@@ -69,6 +69,13 @@ pub struct Node {
     pub path: Option<PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitReason {
+    NodeLimit,
+    MemoryLimit,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ScanResult {
     pub schema_version: u32,
@@ -77,6 +84,8 @@ pub struct ScanResult {
     pub scope: String,
     pub cancelled: bool,
     pub limited: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_reason: Option<LimitReason>,
     pub cross_filesystems: bool,
     pub errors: u64,
     pub nodes: Vec<Node>,
@@ -252,6 +261,7 @@ pub fn scan(
         scope: path.to_string_lossy().into_owned(),
         cancelled: false,
         limited: false,
+        limit_reason: None,
         cross_filesystems: options.cross_filesystems,
         errors: 0,
         nodes: vec![node(path.to_owned(), None)],
@@ -303,6 +313,7 @@ pub fn scan(
             }
             if result.nodes.len() >= options.node_limit.max(1) {
                 result.limited = true;
+                result.limit_reason = Some(LimitReason::NodeLimit);
                 result.nodes[parent].complete = false;
                 break 'walk;
             }
@@ -338,6 +349,7 @@ pub fn scan(
             );
             if memory_used > options.memory_limit {
                 result.limited = true;
+                result.limit_reason = Some(LimitReason::MemoryLimit);
                 result.nodes[parent].complete = false;
                 break 'walk;
             }
@@ -396,6 +408,23 @@ pub enum Sort {
     Name,
 }
 impl ScanResult {
+    /// Translation key for a partial traversal; absent for a completed traversal.
+    pub fn incomplete_reason(&self) -> Option<&'static str> {
+        if self.cancelled {
+            Some("scan_cancelled")
+        } else if self.limited {
+            Some(match self.limit_reason {
+                Some(LimitReason::NodeLimit) => "scan_node_limit",
+                Some(LimitReason::MemoryLimit) => "scan_memory_limit",
+                None => "scan_limited",
+            })
+        } else if self.nodes.first().is_some_and(|node| !node.complete) {
+            Some("scan_incomplete")
+        } else {
+            None
+        }
+    }
+
     pub fn children(&self, parent: usize, query: &str, sort: Sort) -> Vec<usize> {
         let query = query.to_lowercase();
         let mut rows: Vec<_> = self
@@ -429,7 +458,7 @@ impl ScanResult {
         self.sort(&mut rows, sort);
         rows
     }
-    fn sort(&self, rows: &mut [usize], sort: Sort) {
+    pub(crate) fn sort(&self, rows: &mut [usize], sort: Sort) {
         rows.sort_by(|a, b| {
             let name = || {
                 self.nodes[*a]
@@ -535,6 +564,7 @@ pub fn scan_storage(
         scope: root.locator.clone(),
         cancelled: false,
         limited: false,
+        limit_reason: None,
         cross_filesystems: false,
         errors: 0,
         nodes: vec![root],
@@ -543,6 +573,7 @@ pub fn scan_storage(
     let mut memory = std::mem::size_of::<Node>() + result.scope.len() * 3;
     if memory > options.memory_limit {
         result.limited = true;
+        result.limit_reason = Some(LimitReason::MemoryLimit);
         stack.clear();
     }
     let mut known = 0_u64;
@@ -585,6 +616,7 @@ pub fn scan_storage(
             };
             if result.nodes.len() >= options.node_limit.max(1) {
                 result.limited = true;
+                result.limit_reason = Some(LimitReason::NodeLimit);
                 break 'walk;
             }
             child.parent = Some(parent);
@@ -608,6 +640,7 @@ pub fn scan_storage(
             );
             if memory > options.memory_limit {
                 result.limited = true;
+                result.limit_reason = Some(LimitReason::MemoryLimit);
                 break 'walk;
             }
             if child.error.is_some() {

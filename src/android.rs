@@ -16,6 +16,10 @@ fn current_app() -> Option<AndroidApp> {
         .clone()
 }
 
+pub(crate) fn preferences_directory() -> Option<std::path::PathBuf> {
+    current_app().and_then(|app| app.internal_data_path())
+}
+
 fn with_activity(action: impl FnOnce(&mut Env<'_>, &JObject<'_>) -> Result<()>) -> bool {
     let Some(app) = current_app() else {
         return false;

@@ -1,7 +1,10 @@
 //! Storage exploration UI. The list and treemap share a single selection and directory.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::preferences::WindowState;
 use crate::{
     bridge::{self, Listing},
     i18n,
+    preferences::{self, Preferences},
     scan::{self, Kind, ScanResult, Sort},
     theme::{self, Appearance},
     treemap,
@@ -13,7 +16,7 @@ use std::{
     collections::HashSet,
     path::PathBuf,
     sync::{Arc, mpsc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -23,8 +26,29 @@ enum Page {
     Extensions,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExtensionColumn {
+    Name,
+    Size,
+    Files,
+}
+impl ExtensionColumn {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Name => "extension",
+            Self::Size => "size",
+            Self::Files => "file_count",
+        }
+    }
+}
+
 pub struct ExplorerApp {
     language: usize,
+    preferences: Preferences,
+    preferences_path: Option<PathBuf>,
+    saved_preferences: Preferences,
+    last_preferences_write: Instant,
+    preferences_write_failed: bool,
     settings_open: bool,
     expanded: HashSet<usize>,
     children: Vec<Vec<usize>>,
@@ -45,6 +69,7 @@ pub struct ExplorerApp {
     cross_filesystems: bool,
     rows: Vec<usize>,
     extensions: Vec<(String, u64, scan::Measure)>,
+    extension_sort: (ExtensionColumn, bool), // Column and descending order.
     dirty: bool,
     preview: Option<Listing>,
     mobile_busy: bool,
@@ -60,16 +85,69 @@ pub struct ExplorerApp {
 }
 impl ExplorerApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        Self::new_with_preferences(cc, preferences::path())
+    }
+    fn new_with_preferences(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
         cc.egui_ctx.set_fonts(crate::fonts::definitions());
         theme::install(&cc.egui_ctx);
         let repaint = cc.egui_ctx.clone();
         bridge::set_waker(Arc::new(move || repaint.request_repaint()));
-        cc.egui_ctx.set_theme(egui::ThemePreference::System);
-        Self::empty()
+        let mut app = Self::empty();
+        app.preferences_path = path;
+        if let Some(path) = &app.preferences_path {
+            app.preferences = Preferences::load(path);
+        }
+        app.language = app.preferences.language_index();
+        app.appearance = app.preferences.appearance;
+        app.saved_preferences = app.preferences.clone();
+        cc.egui_ctx.set_theme(app.appearance.preference());
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        if let (Some(state), Some(window)) = (app.preferences.window, cc.winit_window()) {
+            let monitor = window
+                .available_monitors()
+                .find(|monitor| {
+                    let Some([x, y]) = state.position else {
+                        return false;
+                    };
+                    let origin = monitor.position();
+                    let size = monitor.size();
+                    (x as i64 >= origin.x as i64
+                        && (x as i64) < origin.x as i64 + size.width as i64)
+                        && (y as i64 >= origin.y as i64
+                            && (y as i64) < origin.y as i64 + size.height as i64)
+                })
+                .or_else(|| window.current_monitor())
+                .or_else(|| window.available_monitors().next());
+            if let Some(monitor) = monitor {
+                let mut position = monitor.position();
+                let extent = monitor.size();
+                let (point, dimensions) = state.fit(
+                    [position.x, position.y],
+                    [extent.width, extent.height],
+                    monitor.scale_factor(),
+                );
+                if state.position.is_some() {
+                    position.x = point[0];
+                    position.y = point[1];
+                    window.set_outer_position(position);
+                }
+                let mut size = window.inner_size();
+                size.width = dimensions[0];
+                size.height = dimensions[1];
+                let _ = window.request_inner_size(size);
+            }
+            window.set_maximized(state.maximized);
+        }
+        app
     }
     fn empty() -> Self {
         Self {
             language: i18n::system_language(),
+            preferences: Preferences::default(),
+            preferences_path: None,
+            saved_preferences: Preferences::default(),
+            last_preferences_write: Instant::now(),
+            preferences_write_failed: false,
             settings_open: false,
             expanded: HashSet::from([0]),
             children: Vec::new(),
@@ -90,6 +168,7 @@ impl ExplorerApp {
             cross_filesystems: false,
             rows: Vec::new(),
             extensions: Vec::new(),
+            extension_sort: (ExtensionColumn::Size, true),
             dirty: true,
             preview: None,
             mobile_busy: false,
@@ -102,6 +181,34 @@ impl ExplorerApp {
             grouped: Vec::new(),
             #[cfg(any(target_os = "android", target_os = "ios"))]
             native_settings: None,
+        }
+    }
+    fn persist_preferences(&mut self, force: bool) {
+        let Some(path) = &self.preferences_path else {
+            return;
+        };
+        self.preferences.appearance = self.appearance;
+        if self.preferences == self.saved_preferences {
+            return;
+        }
+        let settings_changed = self.preferences.appearance != self.saved_preferences.appearance
+            || self.preferences.language != self.saved_preferences.language;
+        if !force
+            && (self.preferences_write_failed || !settings_changed)
+            && self.last_preferences_write.elapsed() < Duration::from_secs(1)
+        {
+            return;
+        }
+        self.last_preferences_write = Instant::now();
+        match self.preferences.save(path) {
+            Ok(()) => {
+                self.saved_preferences = self.preferences.clone();
+                self.preferences_write_failed = false;
+            }
+            Err(error) => {
+                self.preferences_write_failed = true;
+                eprintln!("Could not save UI preferences: {error}");
+            }
         }
     }
     pub fn start(&mut self, path: PathBuf) {
@@ -201,6 +308,7 @@ impl ExplorerApp {
     }
     fn back(&mut self) {
         if self.map_group.take().is_some() {
+            self.query.clear();
             self.dirty = true;
             return;
         }
@@ -210,6 +318,12 @@ impl ExplorerApp {
             .and_then(|r| r.nodes[self.directory].parent)
         {
             self.navigate(parent);
+        }
+    }
+    fn open_group(&mut self) {
+        if self.map_group.is_none() && !self.grouped.is_empty() {
+            self.map_group = Some(self.grouped.clone());
+            self.dirty = true;
         }
     }
     fn refresh_rows(&mut self) {
@@ -260,7 +374,19 @@ impl ExplorerApp {
                 }
             }
             self.rows = if let Some(group) = &self.map_group {
-                group.clone()
+                let query = self.query.to_lowercase();
+                let mut rows: Vec<_> = group
+                    .iter()
+                    .copied()
+                    .filter(|index| {
+                        let node = &result.nodes[*index];
+                        query.is_empty()
+                            || node.name.to_lowercase().contains(&query)
+                            || node.locator.to_lowercase().contains(&query)
+                    })
+                    .collect();
+                result.sort(&mut rows, self.sort);
+                rows
             } else if !self.query.is_empty() {
                 result.search(&self.query, self.page == Page::Largest, self.sort)
             } else if self.page == Page::Largest {
@@ -284,7 +410,11 @@ impl ExplorerApp {
         self.map_objects.clear();
         self.map_weights.clear();
         self.grouped.clear();
-        if let Some(result) = &self.result {
+        // A grouped tile opens its complete virtualized list, never another map
+        // containing a slightly smaller copy of the same grouped tile.
+        if self.map_group.is_none()
+            && let Some(result) = &self.result
+        {
             let total: f64 = self
                 .rows
                 .iter()
@@ -311,9 +441,7 @@ impl ExplorerApp {
                 if weight == 0 || (!self.query.is_empty() && node.kind == Kind::Directory) {
                     continue;
                 }
-                if self.map_objects.len() < 95
-                    && (self.map_group.is_some() || weight as f64 >= total * 0.015)
-                {
+                if self.map_objects.len() < 95 && weight as f64 >= total * 0.015 {
                     self.map_objects.push(Some(index));
                     self.map_weights.push(weight as f64);
                 } else {
@@ -372,6 +500,8 @@ impl ExplorerApp {
                         self.dirty = true;
                     }
                     Command::Language(index) => {
+                        self.preferences.language =
+                            i18n::TAGS.get(index).map(|tag| (*tag).to_owned());
                         self.language = if index < i18n::TAGS.len() {
                             index
                         } else {
@@ -400,6 +530,7 @@ impl ExplorerApp {
         }
         if let Some(result) = self.job.as_ref().and_then(scan::Job::take) {
             self.extensions = result.extensions();
+            self.sort_extensions();
             let result = Arc::new(result);
             #[cfg(any(target_os = "android", target_os = "ios"))]
             if let Some((generation, _)) = &self.provider_scope {
@@ -511,13 +642,23 @@ impl ExplorerApp {
                 });
                 let language_label = ui.label(t("language"));
                 egui::ComboBox::from_id_salt("application-language")
-                    .selected_text(i18n::TAGS[self.language])
+                    .selected_text(if self.preferences.language.is_none() {
+                        format!("{} ({})", t("system"), i18n::TAGS[self.language])
+                    } else {
+                        i18n::TAGS[self.language].to_owned()
+                    })
                     .show_ui(ui, |ui| {
                         if ui.selectable_label(false, t("system")).clicked() {
                             self.language = i18n::system_language();
+                            self.preferences.language = None;
                         }
                         for (index, tag) in i18n::TAGS.iter().enumerate() {
-                            ui.selectable_value(&mut self.language, index, *tag);
+                            if ui
+                                .selectable_value(&mut self.language, index, *tag)
+                                .clicked()
+                            {
+                                self.preferences.language = Some((*tag).to_owned());
+                            }
                         }
                     })
                     .response
@@ -676,6 +817,12 @@ impl ExplorerApp {
                 ));
             });
             ui.label(RichText::new(t("size_caveat")).small().weak());
+            if let Some(reason) = result.incomplete_reason() {
+                ui.label(t(reason));
+            }
+        }
+        if self.preferences_write_failed {
+            ui.label(t("preferences_save_failed"));
         }
         if let Some(notice) = self.notice {
             ui.label(t(notice));
@@ -712,7 +859,6 @@ impl ExplorerApp {
                     .labelled_by(label.id)
                     .changed()
                 {
-                    self.map_group = None;
                     self.dirty = true;
                 }
                 egui::ComboBox::from_label(t("sort"))
@@ -740,29 +886,91 @@ impl ExplorerApp {
                 }
             });
         }
-        if self.page == Page::Directory {
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(
-                        self.directory != 0 || self.map_group.is_some(),
-                        egui::Button::new(t("back")),
-                    )
-                    .clicked()
-                {
-                    self.back();
-                }
-                if let Some(result) = self.result.clone() {
-                    for index in result.breadcrumbs(self.directory) {
-                        if ui.button(&result.nodes[index].name).clicked() {
-                            self.navigate(index);
-                        }
-                    }
-                }
-                if self.map_group.is_some() {
-                    ui.label(t("grouped_items"));
-                }
-            });
+        if self.page == Page::Directory || self.map_group.is_some() {
+            self.path_navigation(ui);
         }
+    }
+    fn back_button(&mut self, ui: &mut egui::Ui) {
+        if ui
+            .add_enabled(
+                self.directory != 0 || self.map_group.is_some(),
+                egui::Button::new(i18n::text(self.language, "back")),
+            )
+            .clicked()
+        {
+            self.back();
+        }
+    }
+    fn path_navigation(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        let language = self.language;
+        let t = |key| i18n::text(language, key);
+        let compact = ui.available_width() < 400.0;
+        ui.vertical(|ui| {
+            if compact {
+                self.back_button(ui);
+            }
+            ui.horizontal(|ui| {
+                if !compact {
+                    self.back_button(ui);
+                    ui.separator();
+                }
+                egui::Frame::new()
+                    .fill(theme::surface(ui.visuals().dark_mode))
+                    .corner_radius(6)
+                    .inner_margin(egui::Margin::symmetric(8, 0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(t("path")).small().weak());
+                            egui::ScrollArea::horizontal()
+                                .id_salt("breadcrumb-path")
+                                .min_scrolled_width(0.0)
+                                .auto_shrink([false, true])
+                                .stick_to_right(true)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                                        if let Some(result) = self.result.clone() {
+                                            for (position, index) in result
+                                                .breadcrumbs(self.directory)
+                                                .into_iter()
+                                                .enumerate()
+                                            {
+                                                if position > 0 {
+                                                    ui.label(RichText::new("›").weak());
+                                                }
+                                                let node = &result.nodes[index];
+                                                if index == self.directory
+                                                    && self.map_group.is_none()
+                                                {
+                                                    ui.label(RichText::new(&node.name).strong())
+                                                        .on_hover_text(&node.locator);
+                                                } else if ui
+                                                    .add_sized(
+                                                        [0.0, ui.spacing().interact_size.y],
+                                                        egui::Button::new(
+                                                            RichText::new(&node.name).underline(),
+                                                        )
+                                                        .frame(false)
+                                                        .wrap_mode(egui::TextWrapMode::Extend),
+                                                    )
+                                                    .on_hover_text(&node.locator)
+                                                    .clicked()
+                                                {
+                                                    self.navigate(index);
+                                                }
+                                            }
+                                        }
+                                        if self.map_group.is_some() {
+                                            ui.label(RichText::new("›").weak());
+                                            ui.label(RichText::new(t("grouped_items")).italics());
+                                        }
+                                    });
+                                });
+                        });
+                    });
+            });
+        })
+        .response
     }
     fn table(&mut self, ui: &mut egui::Ui, height: f32) {
         let Some(result) = self.result.clone() else {
@@ -776,7 +984,13 @@ impl ExplorerApp {
                 .color(theme::accent(ui.visuals().dark_mode)),
         );
         if self.rows.is_empty() {
-            ui.label(t("no_results"));
+            ui.label(t(
+                if !result.nodes[self.directory].complete && self.query.is_empty() {
+                    "incomplete_directory"
+                } else {
+                    "no_results"
+                },
+            ));
             return;
         }
         let tree =
@@ -795,7 +1009,13 @@ impl ExplorerApp {
             });
         });
         egui::ScrollArea::vertical()
-            .id_salt("object-list")
+            .id_salt((
+                "object-list",
+                self.map_group
+                    .as_ref()
+                    .and_then(|group| group.first())
+                    .copied(),
+            ))
             .max_height(height)
             .auto_shrink([false, false])
             .show_rows(ui, row_height, count, |ui, range| {
@@ -1059,12 +1279,13 @@ impl ExplorerApp {
                 );
             }
             let double_clicked = response.double_clicked();
-            if response.clicked() {
+            if response.clicked()
+                || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+            {
                 if let Some(index) = objects[position] {
                     self.select(index);
                 } else {
-                    self.map_group = Some(self.grouped.clone());
-                    self.dirty = true;
+                    self.open_group();
                 }
             }
             if (double_clicked
@@ -1085,8 +1306,7 @@ impl ExplorerApp {
                 ))
                 .clicked()
         {
-            self.map_group = Some(self.grouped.clone());
-            self.dirty = true;
+            self.open_group();
         }
     }
     fn details(&mut self, ui: &mut egui::Ui) {
@@ -1121,6 +1341,18 @@ impl ExplorerApp {
                 }
                 if let Some(error) = &node.error {
                     ui.label(t(error));
+                }
+                if node.kind == Kind::Directory && !node.complete {
+                    ui.label(t("incomplete_directory"));
+                    if let Some(reason) = result.incomplete_reason() {
+                        ui.label(t(reason));
+                    }
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    if let Some(path) = &node.path
+                        && ui.button(t("scan_folder_separately")).clicked()
+                    {
+                        self.start(path.clone());
+                    }
                 }
                 ui.horizontal_wrapped(|ui| {
                     if ui.button(t("copy_path")).clicked() {
@@ -1193,50 +1425,157 @@ impl ExplorerApp {
     }
 }
 impl ExplorerApp {
-    fn extension_table(&self, ui: &mut egui::Ui) {
-        let language = self.language;
-        egui::ScrollArea::vertical()
-            .id_salt("extensions")
-            .auto_shrink([false, true])
-            .max_height(500.0)
-            .show_rows(ui, 40.0, self.extensions.len(), |ui, range| {
-                let width = (ui.available_width() - 2.0 * ui.spacing().item_spacing.x).max(0.0);
-                let columns = [width * 0.50, width * 0.28, width * 0.22];
-                for index in range {
-                    let (name, count, size) = &self.extensions[index];
-                    let values = [
-                        if name.is_empty() {
-                            i18n::text(language, "no_extension").to_owned()
-                        } else {
-                            name.clone()
-                        },
-                        measure(language, *size),
-                        i18n::counted(language, *count, "file"),
-                    ];
-                    ui.horizontal(|ui| {
-                        for column in 0..3 {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(columns[column], 40.0),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.set_min_width(columns[column]);
-                                    ui.set_min_height(40.0);
-                                    let text = if column == 1 {
-                                        RichText::new(&values[column]).monospace()
-                                    } else {
-                                        RichText::new(&values[column])
-                                    };
-                                    ui.add(egui::Label::new(text).truncate())
-                                        .on_hover_text(&values[column]);
-                                },
-                            );
-                        }
-                    });
+    fn sort_extensions(&mut self) {
+        let (column, descending) = self.extension_sort;
+        self.extensions.sort_by(|a, b| {
+            let order = match column {
+                ExtensionColumn::Name => a.0.cmp(&b.0),
+                ExtensionColumn::Size => {
+                    a.2.overflow
+                        .cmp(&b.2.overflow)
+                        .then(a.2.known.cmp(&b.2.known))
                 }
-            });
+                ExtensionColumn::Files => a.1.cmp(&b.1),
+            };
+            (if descending { order.reverse() } else { order }).then(a.0.cmp(&b.0))
+        });
+    }
+    fn extension_table(&mut self, ui: &mut egui::Ui) {
+        let language = self.language;
+        let width = (ui.available_width()
+            - ui.spacing().scroll.allocated_width()
+            - 2.0 * ui.spacing().item_spacing.x)
+            .max(0.0);
+        let columns = [width * 0.50, width * 0.28, width * 0.22];
+        let mut resorted = false;
+        ui.horizontal(|ui| {
+            for (index, column) in [
+                ExtensionColumn::Name,
+                ExtensionColumn::Size,
+                ExtensionColumn::Files,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let active = self.extension_sort.0 == column;
+                let heading = i18n::text(language, column.key());
+                let direction = i18n::text(
+                    language,
+                    if self.extension_sort.1 {
+                        "descending"
+                    } else {
+                        "ascending"
+                    },
+                );
+                let label = if active {
+                    format!(
+                        "{heading} {}",
+                        if self.extension_sort.1 { "↓" } else { "↑" }
+                    )
+                } else {
+                    heading.to_owned()
+                };
+                let response = ui.add_sized(
+                    [columns[index], 40.0],
+                    egui::Button::new(label).selected(active).truncate(),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::Button,
+                        true,
+                        active,
+                        if active {
+                            format!("{heading}: {direction}")
+                        } else {
+                            heading.to_owned()
+                        },
+                    )
+                });
+                let clicked = response.clicked();
+                response.on_hover_text(if active {
+                    format!("{heading}: {direction}")
+                } else {
+                    heading.to_owned()
+                });
+                if clicked {
+                    self.extension_sort = (
+                        column,
+                        if active {
+                            !self.extension_sort.1
+                        } else {
+                            column != ExtensionColumn::Name
+                        },
+                    );
+                    self.sort_extensions();
+                    resorted = true;
+                }
+            }
+        });
+        let mut scroll = egui::ScrollArea::vertical()
+            .id_salt("extensions")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .auto_shrink([false, true])
+            .max_height(500.0);
+        if resorted {
+            scroll = scroll.vertical_scroll_offset(0.0);
+        }
+        scroll.show_rows(ui, 40.0, self.extensions.len(), |ui, range| {
+            for index in range {
+                let (name, count, size) = &self.extensions[index];
+                let values = [
+                    if name.is_empty() {
+                        i18n::text(language, "no_extension").to_owned()
+                    } else {
+                        name.clone()
+                    },
+                    measure(language, *size),
+                    i18n::counted(language, *count, "file"),
+                ];
+                ui.horizontal(|ui| {
+                    for column in 0..3 {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(columns[column], 40.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_min_width(columns[column]);
+                                ui.set_min_height(40.0);
+                                let text = if column == 1 {
+                                    RichText::new(&values[column]).monospace()
+                                } else {
+                                    RichText::new(&values[column])
+                                };
+                                ui.add(egui::Label::new(text).truncate())
+                                    .on_hover_text(&values[column]);
+                            },
+                        );
+                    }
+                });
+            }
+        });
     }
     fn object_workspace(&mut self, ui: &mut egui::Ui, wide: bool) {
         let remaining = ui.clip_rect().bottom() - ui.cursor().top();
+        if self.map_group.is_some() {
+            ui.label(i18n::counted(
+                self.language,
+                self.rows.len() as u64,
+                "object",
+            ));
+            if self.selected.is_some() {
+                egui::CollapsingHeader::new(i18n::text(self.language, "selected_item"))
+                    .id_salt("group-selection-details")
+                    .show(ui, |ui| self.details(ui));
+            }
+            self.table(
+                ui,
+                if wide {
+                    (remaining - 100.0).max(200.0)
+                } else {
+                    320.0
+                },
+            );
+            return;
+        }
         if wide && remaining >= 360.0 {
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), remaining),
@@ -1439,19 +1778,7 @@ fn kind_key(kind: Kind) -> &'static str {
     }
 }
 fn measure(language: usize, size: scan::Measure) -> String {
-    let mut text = if size.overflow {
-        i18n::text(language, "overflow").into()
-    } else {
-        i18n::bytes(language, size.known)
-    };
-    if size.unknown > 0 {
-        text.push_str(&format!(
-            " + {} {}",
-            i18n::integer(language, size.unknown),
-            i18n::text(language, "unknown")
-        ));
-    }
-    text
+    i18n::measure(language, size)
 }
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn reveal(path: &Path) -> bool {
@@ -1483,14 +1810,189 @@ impl eframe::App for ExplorerApp {
     fn raw_input_hook(&mut self, context: &egui::Context, input: &mut egui::RawInput) {
         crate::android::apply_safe_area(context, input);
     }
-    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let zoom = ui.ctx().zoom_factor();
+            self.preferences.window = ui.ctx().input(|input| {
+                WindowState::capture(
+                    self.preferences.window,
+                    input.viewport(),
+                    input
+                        .viewport()
+                        .inner_rect
+                        .map_or(input.viewport_rect().size(), |rect| rect.size()),
+                    zoom,
+                )
+            });
+        }
         self.draw(ui);
+        self.persist_preferences(false);
+        if self.preferences != self.saved_preferences && self.preferences_path.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_secs(1));
+        }
+    }
+}
+
+impl Drop for ExplorerApp {
+    fn drop(&mut self) {
+        self.persist_preferences(true);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_preferences_writes_are_throttled_and_recover() {
+        let files = preferences::tests::Fixture::new();
+        std::fs::write(files.path(), b"blocking parent").unwrap();
+        let destination = files.path().join("settings.json");
+        let mut app = ExplorerApp::empty();
+        app.preferences_path = Some(destination.clone());
+        app.appearance = Appearance::Dark;
+        app.persist_preferences(false);
+        assert!(app.preferences_write_failed);
+        let failed_at = app.last_preferences_write;
+        for _ in 0..5 {
+            app.persist_preferences(false);
+        }
+        assert_eq!(app.last_preferences_write, failed_at);
+        let context = egui::Context::default();
+        let output = frame(&mut app, &context, vec![]);
+        assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text()==i18n::text(app.language,"preferences_save_failed"))));
+        std::fs::remove_file(files.path()).unwrap();
+        app.last_preferences_write = Instant::now() - Duration::from_secs(2);
+        app.persist_preferences(false);
+        assert!(!app.preferences_write_failed);
+        assert_eq!(Preferences::load(&destination).appearance, Appearance::Dark);
+    }
+    #[test]
+    fn unknown_sizes_never_look_like_verified_empty_objects_in_any_language() {
+        for language in 0..i18n::TAGS.len() {
+            assert_eq!(
+                measure(language, scan::Measure::default()),
+                i18n::bytes(language, 0)
+            );
+            let unknown = measure(
+                language,
+                scan::Measure {
+                    unknown: 1,
+                    ..Default::default()
+                },
+            );
+            assert!(unknown.starts_with(i18n::text(language, "unknown")));
+            assert!(!unknown.contains(&i18n::bytes(language, 0)));
+            assert_eq!(
+                measure(
+                    language,
+                    scan::Measure {
+                        known: 125739,
+                        ..Default::default()
+                    }
+                ),
+                i18n::bytes(language, 125739)
+            );
+            assert!(
+                measure(
+                    language,
+                    scan::Measure {
+                        known: 10,
+                        unknown: 1,
+                        ..Default::default()
+                    }
+                )
+                .starts_with(&i18n::bytes(language, 10))
+            );
+        }
+    }
+    #[test]
+    fn incomplete_directory_explains_the_limit_and_can_be_scanned_separately() {
+        let files = preferences::tests::Fixture::new();
+        let directory = files.path().with_extension("directory");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("payload"), vec![1; 125739]).unwrap();
+        let mut app = fixture();
+        let result = Arc::make_mut(app.result.as_mut().unwrap());
+        result.nodes.truncate(2);
+        result.limited = true;
+        result.limit_reason = Some(scan::LimitReason::MemoryLimit);
+        for node in &mut result.nodes {
+            node.complete = false;
+            node.logical = scan::Measure {
+                unknown: 1,
+                ..Default::default()
+            };
+        }
+        result.nodes[1].path = Some(directory.clone());
+        app.directory = 1;
+        app.selected = Some(1);
+        let context = egui::Context::default();
+        context.set_fonts(crate::fonts::definitions());
+        theme::install(&context);
+        for _ in 0..3 {
+            frame(&mut app, &context, vec![]);
+        }
+        let output = context.run_ui(egui::RawInput::default(), |ui| app.details(ui));
+        let mut output = output;
+        output.textures_delta.clear();
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text()==i18n::text(0,"scan_memory_limit"))));
+        let pos = text_position(&output, i18n::text(0, "scan_folder_separately"));
+        for pressed in [true, false] {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    events: vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ui| app.details(ui),
+            );
+            output.textures_delta.clear();
+        }
+        assert_eq!(app.scope.as_ref(), Some(&directory));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let result = loop {
+            if let Some(result) = app.job.as_ref().and_then(scan::Job::take) {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "separate scan did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(result.nodes[0].logical.known, 125739);
+        assert!(result.nodes[0].complete);
+    }
+    #[test]
+    fn settings_save_immediately_and_shutdown_flushes_pending_window_changes() {
+        let files = preferences::tests::Fixture::new();
+        let mut app = ExplorerApp::empty();
+        app.preferences_path = Some(files.path());
+        app.appearance = Appearance::Light;
+        app.preferences.language = Some("fr".into());
+        app.persist_preferences(false);
+        let saved = Preferences::load(&files.path());
+        assert_eq!(saved.language.as_deref(), Some("fr"));
+        assert_eq!(saved.appearance, Appearance::Light);
+        app.preferences.window = Some(crate::preferences::WindowState {
+            position: Some([240, 160]),
+            size: [900.0, 640.0],
+            maximized: false,
+        });
+        app.last_preferences_write = Instant::now();
+        app.persist_preferences(false);
+        assert_eq!(Preferences::load(&files.path()).window, None);
+        let expected = app.preferences.clone();
+        drop(app);
+        assert_eq!(Preferences::load(&files.path()), expected);
+    }
     fn fixture() -> ExplorerApp {
         let mut app = ExplorerApp::empty();
         let nodes = [
@@ -1525,6 +2027,7 @@ mod tests {
             scope: "Scope".into(),
             cancelled: false,
             limited: false,
+            limit_reason: None,
             cross_filesystems: false,
             errors: 0,
             nodes,
@@ -1717,6 +2220,107 @@ mod tests {
         }
     }
     #[test]
+    fn file_type_headers_sort_each_column_in_both_directions_without_rescanning() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = fixture();
+        app.page = Page::Extensions;
+        app.extensions = [("txt", 2, 20), ("jpg", 5, 10), ("", 1, 30), ("zip", 3, 20)]
+            .into_iter()
+            .map(|(name, count, known)| {
+                (
+                    name.into(),
+                    count,
+                    scan::Measure {
+                        known,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        app.sort_extensions();
+        let result = app.result.clone().unwrap();
+        for (column, descending, expected) in [
+            (ExtensionColumn::Name, false, ["", "jpg", "txt", "zip"]),
+            (ExtensionColumn::Name, true, ["zip", "txt", "jpg", ""]),
+            (ExtensionColumn::Size, true, ["", "txt", "zip", "jpg"]),
+            (ExtensionColumn::Size, false, ["jpg", "txt", "zip", ""]),
+            (ExtensionColumn::Files, true, ["jpg", "zip", "txt", ""]),
+            (ExtensionColumn::Files, false, ["", "txt", "zip", "jpg"]),
+        ] {
+            for _ in 0..3 {
+                frame(&mut app, &context, vec![]);
+            }
+            let output = frame(&mut app, &context, vec![]);
+            let heading = i18n::text(0, column.key());
+            let label = if app.extension_sort.0 == column {
+                format!("{heading} {}", if app.extension_sort.1 { "↓" } else { "↑" })
+            } else {
+                heading.to_owned()
+            };
+            let position = text_position(&output, &label);
+            click(&mut app, &context, position);
+            assert_eq!(app.extension_sort, (column, descending));
+            assert_eq!(
+                app.extensions
+                    .iter()
+                    .map(|row| row.0.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert!(Arc::ptr_eq(app.result.as_ref().unwrap(), &result));
+            assert!(app.job.is_none());
+        }
+    }
+    #[test]
+    fn file_type_sorting_preserves_unknown_sizes_and_orders_overflow_explicitly() {
+        let mut app = fixture();
+        let unknown = scan::Measure {
+            unknown: 2,
+            ..Default::default()
+        };
+        app.extensions = vec![
+            ("unknown".into(), 2, unknown),
+            ("empty".into(), 1, scan::Measure::default()),
+            (
+                "large".into(),
+                3,
+                scan::Measure {
+                    known: u64::MAX,
+                    ..Default::default()
+                },
+            ),
+            (
+                "overflow".into(),
+                4,
+                scan::Measure {
+                    known: u64::MAX,
+                    overflow: true,
+                    ..Default::default()
+                },
+            ),
+        ];
+        app.sort_extensions();
+        assert_eq!(
+            app.extensions
+                .iter()
+                .map(|row| row.0.as_str())
+                .collect::<Vec<_>>(),
+            ["overflow", "large", "empty", "unknown"]
+        );
+        app.extension_sort.1 = false;
+        app.sort_extensions();
+        assert_eq!(
+            app.extensions
+                .iter()
+                .map(|row| row.0.as_str())
+                .collect::<Vec<_>>(),
+            ["empty", "unknown", "large", "overflow"]
+        );
+        assert_eq!(app.extensions[1].2, unknown);
+    }
+    #[test]
     fn extension_columns_do_not_move_when_long_names_scroll_into_view() {
         let context = egui::Context::default();
         theme::install(&context);
@@ -1836,7 +2440,9 @@ mod tests {
         let context = egui::Context::default();
         theme::install(&context);
         context.set_fonts(crate::fonts::definitions());
+        let files = preferences::tests::Fixture::new();
         let mut app = ExplorerApp::empty();
+        app.preferences_path = Some(files.path());
         app.language = 0;
         frame(&mut app, &context, vec![]);
         let output = frame(&mut app, &context, vec![]);
@@ -1844,13 +2450,26 @@ mod tests {
         click(&mut app, &context, pos);
         let output = frame(&mut app, &context, vec![]);
         assert!(app.settings_open);
-        let pos = text_position(&output, "en");
+        let pos = text_position(&output, "Dark");
+        click(&mut app, &context, pos);
+        let output = frame(&mut app, &context, vec![]);
+        let pos = text_position(&output, "System (en)");
         click(&mut app, &context, pos);
         let output = frame(&mut app, &context, vec![]);
         let pos = text_position(&output, "ru");
         click(&mut app, &context, pos);
         assert_eq!(app.language, 1);
         assert!(app.settings_open);
+        drop(app);
+        let restored_context = egui::Context::default();
+        let restored = ExplorerApp::new_with_preferences(
+            &eframe::CreationContext::_new_kittest(restored_context.clone()),
+            Some(files.path()),
+        );
+        assert_eq!(restored.language, 1);
+        assert_eq!(restored.appearance, Appearance::Dark);
+        assert_eq!(restored.preferences.language.as_deref(), Some("ru"));
+        assert_eq!(restored_context.theme(), egui::Theme::Dark);
     }
     #[test]
     fn tree_expansion_sorting_and_map_selection_preserve_hierarchy() {
@@ -2066,9 +2685,123 @@ mod tests {
         }
     }
     #[test]
-    fn map_grouping_is_bounded_and_expands_without_losing_selection() {
+    fn long_breadcrumbs_remain_one_path_row_in_all_languages_and_themes() {
+        for language in 0..i18n::TAGS.len() {
+            for appearance in [Appearance::Light, Appearance::Dark] {
+                for width in [320.0, 1180.0] {
+                    let context = egui::Context::default();
+                    context.set_fonts(crate::fonts::definitions());
+                    theme::install(&context);
+                    context.set_theme(appearance.preference());
+                    context.set_zoom_factor(1.6);
+                    let mut app = fixture();
+                    app.language = language;
+                    let result = Arc::make_mut(app.result.as_mut().unwrap());
+                    for index in 5..20 {
+                        result.nodes.push(scan::Node {
+                            parent: Some(if index == 5 { 2 } else { index - 1 }),
+                            name: if index == 19 {
+                                "current-folder".into()
+                            } else {
+                                format!("a-very-long-parent-directory-{index}")
+                            },
+                            locator: format!("/Scope/Photos/Trips/folder-{index}"),
+                            native_locator: String::new(),
+                            kind: Kind::Directory,
+                            logical: scan::Measure::default(),
+                            allocated: scan::Measure::default(),
+                            complete: true,
+                            hard_link: false,
+                            error: None,
+                            path: None,
+                        });
+                    }
+                    app.directory = 19;
+                    let mut path_rect = egui::Rect::NOTHING;
+                    let mut output = egui::FullOutput::default();
+                    for _ in 0..4 {
+                        output = context.run_ui(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    egui::vec2(width / 1.6, 500.0),
+                                )),
+                                ..Default::default()
+                            },
+                            |ui| {
+                                path_rect = app.path_navigation(ui).rect;
+                            },
+                        );
+                        output.textures_delta.clear();
+                    }
+                    assert!(
+                        path_rect.right() <= width / 1.6 + 1.0,
+                        "path exceeds viewport: {language} {width} {path_rect:?}"
+                    );
+                    assert!(
+                        path_rect.height() < if width / 1.6 < 400.0 { 130.0 } else { 90.0 },
+                        "path navigation grew beyond its compact layout: {path_rect:?}"
+                    );
+                    let mut centers = Vec::new();
+                    let mut current_visible = false;
+                    let mut path_label_visible = false;
+                    for shape in &output.shapes {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            let label = text.galley.text();
+                            let center = text.pos + text.galley.size() * 0.5;
+                            if label == "›"
+                                || label == "current-folder"
+                                || label.starts_with("a-very-long-parent-")
+                            {
+                                centers.push(center.y);
+                            }
+                            if label == "current-folder" {
+                                current_visible = shape.clip_rect.contains(center);
+                            }
+                            if label == i18n::text(language, "path") {
+                                path_label_visible = shape.clip_rect.contains(center);
+                            }
+                        }
+                    }
+                    assert!(
+                        current_visible && path_label_visible,
+                        "current folder or path label is hidden: {language} {width}"
+                    );
+                    assert!(
+                        centers.iter().all(|y| (*y - centers[0]).abs() < 3.0),
+                        "breadcrumb segments wrapped: {centers:?}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn breadcrumb_links_navigate_to_ancestors_and_back_remains_separate() {
+        let context = egui::Context::default();
+        context.set_fonts(crate::fonts::definitions());
+        theme::install(&context);
+        let mut app = fixture();
+        app.navigate(2);
+        for _ in 0..4 {
+            frame(&mut app, &context, vec![]);
+        }
+        let output = frame(&mut app, &context, vec![]);
+        let photos = text_position(&output, "Photos");
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text()=="Photos"
+                && text.galley.job.sections.iter().any(|section| section.format.underline.width>0.0))));
+        click(&mut app, &context, photos);
+        assert_eq!(app.directory, 1);
+        let output = frame(&mut app, &context, vec![]);
+        let back = text_position(&output, "Back");
+        click(&mut app, &context, back);
+        assert_eq!(app.directory, 0);
+    }
+    #[test]
+    fn a_single_group_click_opens_all_25000_items_without_recursive_grouping() {
         let mut app = ExplorerApp::empty();
-        let nodes = (0..1001)
+        app.language = 0;
+        let nodes = (0..25001)
             .map(|i| scan::Node {
                 parent: if i == 0 { None } else { Some(0) },
                 name: format!("item-{i}"),
@@ -2076,7 +2809,11 @@ mod tests {
                 native_locator: i.to_string(),
                 kind: if i == 0 { Kind::Directory } else { Kind::File },
                 logical: scan::Measure {
-                    known: 1001 - i as u64,
+                    known: if i == 0 {
+                        25000 * 25001 / 2
+                    } else {
+                        25001 - i as u64
+                    },
                     ..Default::default()
                 },
                 allocated: scan::Measure::default(),
@@ -2093,11 +2830,12 @@ mod tests {
             scope: String::new(),
             cancelled: false,
             limited: false,
+            limit_reason: None,
             cross_filesystems: false,
             errors: 0,
             nodes,
         }));
-        app.selected = Some(1000);
+        app.selected = Some(25000);
         app.refresh_rows();
         assert!(app.map_objects.len() <= 96);
         assert!(!app.grouped.is_empty());
@@ -2106,12 +2844,89 @@ mod tests {
             app.map_objects[app.selected_tile().unwrap()].is_none(),
             "a selected small file must mark the grouped tile"
         );
-        app.map_group = Some(app.grouped.clone());
-        app.dirty = true;
+        assert_eq!(grouped_count, 25000);
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        for label in [
+            i18n::text(0, "grouped_items").to_owned(),
+            format!(
+                "{} ({})",
+                i18n::text(0, "grouped_items"),
+                i18n::integer(0, 25000)
+            ),
+        ] {
+            for _ in 0..5 {
+                frame(&mut app, &context, vec![]);
+            }
+            let output = frame(&mut app, &context, vec![]);
+            let position = text_position(&output, &label);
+            click(&mut app, &context, position);
+            let output = frame(&mut app, &context, vec![]);
+            assert_eq!(app.rows.len(), grouped_count);
+            assert_eq!(app.map_group.as_ref().unwrap().len(), grouped_count);
+            assert!(app.map_objects.is_empty());
+            assert!(app.grouped.is_empty());
+            assert_eq!(app.selected, Some(25000));
+            let visible_names = output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text().starts_with("item-"))
+                })
+                .count();
+            assert!(
+                visible_names < 100,
+                "group rows must remain virtualized: {visible_names}"
+            );
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == i18n::text(0,"treemap"))));
+            app.sort = Sort::Name;
+            app.dirty = true;
+            app.refresh_rows();
+            let mut expected = app.map_group.clone().unwrap();
+            app.result.as_ref().unwrap().sort(&mut expected, Sort::Name);
+            assert_eq!(app.rows, expected);
+            app.query = "item-25000".into();
+            app.dirty = true;
+            app.refresh_rows();
+            assert_eq!(app.rows, vec![25000]);
+            assert_eq!(app.map_group.as_ref().unwrap().len(), grouped_count);
+            let output = frame(&mut app, &context, vec![]);
+            let back = text_position(&output, i18n::text(0, "back"));
+            click(&mut app, &context, back);
+            frame(&mut app, &context, vec![]);
+            assert!(app.map_group.is_none());
+            assert!(app.query.is_empty());
+            assert_eq!(app.directory, 0);
+            assert_eq!(app.selected, Some(25000));
+            assert_eq!(app.grouped.len(), grouped_count);
+            assert!(app.map_objects.len() <= 96);
+        }
+        let _ = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1180.0, 900.0),
+                )),
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+                ..Default::default()
+            },
+            |ui| {
+                ui.memory_mut(|memory| memory.request_focus(ui.id().with(("tile", 0usize))));
+                app.map(ui, 260.0, false);
+            },
+        );
         app.refresh_rows();
-        assert_eq!(app.rows.len(), grouped_count);
-        assert_eq!(app.map_objects.len(), 96);
-        assert!(app.grouped.len() < grouped_count);
-        assert_eq!(app.selected, Some(1000));
+        assert_eq!(app.map_group.as_ref().unwrap().len(), 25000);
+        assert_eq!(app.rows.len(), 25000);
+        assert!(app.grouped.is_empty());
     }
 }

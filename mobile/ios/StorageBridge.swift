@@ -432,7 +432,7 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
         } else if indexPath.row < entries.count {
             let entry = entries[indexPath.row]
             cell.textLabel?.text = entry["name"] as? String
-            cell.detailTextLabel?.text = (entry["size_label"] as? String ?? "") + ((entry["count_label"] as? String).map { " · " + $0 } ?? "")
+            cell.detailTextLabel?.text = (entry["size_label"] as? String ?? "") + ((entry["scan_note"] as? String).flatMap { $0.isEmpty ? nil : "\n" + $0 } ?? "") + ((entry["count_label"] as? String).map { " · " + $0 } ?? "")
             if entry["id"] != nil { cell.accessibilityTraits = .button }
             if entry["directory"] as? Bool == true { cell.accessoryType = .disclosureIndicator }
         } else {

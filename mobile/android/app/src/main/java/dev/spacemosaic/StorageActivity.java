@@ -311,7 +311,7 @@ public final class StorageActivity extends NativeActivity {
             if (!entry.has("id")) { addText(entry.optString("name") + "\n" + entry.optString("size_label") + "\n" + entry.optString("count_label")); continue; }
             Button row = new Button(viewContext()); row.setAllCaps(false); row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             row.setMinHeight((int)(64 * getResources().getDisplayMetrics().density));
-            row.setText(text(entry.optBoolean("directory") ? "directory" : "file") + ": " + entry.optString("name") + "\n" + entry.optString("size_label"));
+            row.setText(text(entry.optBoolean("directory") ? "directory" : "file") + ": " + entry.optString("name") + "\n" + entry.optString("size_label") + (entry.optString("scan_note").isEmpty() ? "" : "\n" + entry.optString("scan_note")));
             row.setOnClickListener(view -> {
                 if (entry.optBoolean("directory")) navigate(entry.optLong("id"));
                 else details(entry);

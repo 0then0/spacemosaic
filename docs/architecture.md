@@ -30,6 +30,11 @@ children. A reverse pass aggregates size measures without recursive stack use.
 Known bytes, unknown measurements, and overflow are separate fields. Hard links
 are counted per path. Symlinks and Windows reparse points are not followed.
 Native path bytes/UTF-16 are retained in JSON alongside a human-readable path.
+Schema 1 also permits an optional `limit_reason` field (`node_limit` or
+`memory_limit`) when `limited` is true. Older schema-1 exports without that field
+remain readable and receive a generic resource-limit explanation. Cancellation
+continues to use the separate `cancelled` flag. These machine fields do not
+depend on the UI language.
 
 The UI caches filtered rows and map membership when navigation or filters
 change. It virtualizes the object list and paints at most 96 map rectangles;

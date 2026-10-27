@@ -28,12 +28,18 @@ from those checks. See [platform support](docs/testing.md).
   divider to resize the two areas. When space is limited, the result scrolls
   vertically so controls and content remain accessible. Navigate with breadcrumbs and Back, inspect
   the largest files, and review file types, including files without an extension.
+  Click a file-type column header to sort by extension, known size, or file count;
+  click it again to reverse the order.
 - Search the completed result and sort by name or logical size without reading
   the disk again.
 - Select an object in the tree or squarified treemap to inspect the same details.
   Tiles use stable colors for folders and file extensions, with explicit folder
   labels so navigation does not depend on color. Selecting a nested file marks
   its containing tile and shows the selected path above the map.
+  Open **Smaller items** once to browse the entire group in a virtualized list,
+  search or sort it, then use **Back** to return to the map.
+  The labeled path bar separates ancestor links with `›` and highlights the
+  current folder. Long paths scroll horizontally; Back remains a separate action.
   Double-click a directory to zoom in. Smaller map items expand into a list;
   zero and unknown sizes remain available in the list.
 - Copy a path, reveal an object in the system file manager, or export a
@@ -69,6 +75,12 @@ Windows volume identities are not otherwise compared. A scan is a live
 metadata observation, not an atomic snapshot. Permission failures, disappearing
 files, cancellation, numeric overflow, and resource limits remain visible as
 partial or unknown results.
+
+An unread or incomplete directory is not an empty directory. When no bytes are
+known, the UI displays **Unknown** instead of `0 B`. Partial results identify
+cancellation, the object limit, or the metadata memory limit. Desktop object
+details offer **Scan this folder separately** for incomplete directories; this
+starts a new scan with that folder as the selected scope.
 
 Desktop scans are limited to 500,000 objects and an estimated 256 MiB metadata
 budget; mobile scans use 100,000 objects and 64 MiB. Reaching either limit leaves
@@ -247,6 +259,16 @@ There are no accounts, telemetry, uploads, automatic updates, deletion tools,
 cleanup actions, or user-supplied shell commands. Storage metadata stays in
 memory unless you explicitly export it. Exports contain paths and file names;
 review them before sharing. Android may retain an OS-managed read grant.
+Language and appearance preferences are saved locally in `settings.json`.
+Desktop also remembers the window's normal size, position, and maximized state.
+The System language and appearance options continue to follow the operating
+system after restarting. Window placement remains controlled by the compositor
+on Wayland; mobile window placement is managed by Android and iOS.
+Settings live in `%APPDATA%\SpaceMosaic` on Windows,
+`~/Library/Application Support/SpaceMosaic` on macOS and iOS (inside the app
+sandbox on iOS), `$XDG_CONFIG_HOME/spacemosaic` or `~/.config/spacemosaic` on
+Linux, and the app's private internal directory on Android. No scan results,
+file names, paths, or content URIs are stored in this settings file.
 Cloud providers can use their own network connection to retrieve metadata;
 SpaceMosaic does not request file-content downloads.
 

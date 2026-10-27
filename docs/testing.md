@@ -47,6 +47,25 @@ exercise resizing, text scaling, scroll access to the map, persistent selection
 highlights, and nested/grouped selections. Phone regressions cover toolbar
 height and complete export menus, safe-area settings after rotation/text scaling,
 stable file-type columns during scrolling, and divider dragging in both themes.
+File-type header tests click all three columns in both directions, check stable
+ties, preserve unknown/overflow size metadata, and verify that sorting reuses
+the existing scan result.
+Breadcrumb tests cover long paths in all seven languages, both themes, phone and
+desktop widths, and enlarged text. They check a single scrolling path row,
+visible current-folder/path labels, ancestor navigation, and the separate Back action.
+The grouped-map regression uses 25,000 synthetic items: one tile/button click
+or keyboard activation exposes the complete virtualized list, supports search
+and sorting, and returns to the original map with the selection preserved.
+Preference tests save and reload all language/theme combinations using disposable
+files, reconstruct the UI after language/theme selection, recover from malformed
+or unsupported settings, and preserve normal window bounds across maximization,
+minimization, text zoom, changed display scaling, and disconnected monitors.
+Failed-write tests verify retry throttling, a visible failure notice, and recovery
+when the settings directory becomes writable. Partial-scan fixtures reproduce
+an unread `.agents` directory under the object limit, then scan it separately
+and verify its exact 125,739-byte logical total. Tests distinguish empty/unknown
+sizes, both resource limits, cancellation, and backward-compatible JSON decoding;
+native mobile result labels and explanations are checked in all seven languages.
 
 Provider fixtures exercise recursive multi-page traversal, opaque URI export,
 unknown sizes, incomplete provider pages, denied children, cycles, resource
@@ -89,6 +108,9 @@ a file without an extension, and long/non-Latin names. Verify:
 4. Navigate through breadcrumbs, Back, list controls, and treemap selection.
 5. Inspect unreadable/disappearing objects, links, and filesystem boundaries.
 6. Switch System → Light → Dark → System, then change OS appearance.
+   Restart after each choice and after changing the language. Move and resize
+   the desktop window, restart, then repeat while maximized and after disconnecting
+   its previous display. On Wayland, verify size only; placement belongs to the compositor.
 7. Check all seven languages at narrow/wide widths, both themes, and large text.
 8. Use keyboard-only navigation and an actual desktop screen reader.
 
