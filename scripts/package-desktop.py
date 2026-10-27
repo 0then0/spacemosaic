@@ -98,7 +98,7 @@ if system == "darwin":
                 "CFBundlePackageType": "APPL",
                 "CFBundleShortVersionString": version.split("-", 1)[0],
                 "CFBundleGetInfoString": f"SpaceMosaic {version}",
-                "CFBundleVersion": "3",
+                "CFBundleVersion": "4",
                 "CFBundleIconFile": "NSApplicationIcon.icns",
                 "NSHighResolutionCapable": True,
             },

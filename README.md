@@ -12,11 +12,11 @@ Choose a folder, inspect its directory tree, and compare large files using an
 interactive space map. Files stay on your computer; the application never
 reads their contents to calculate sizes.
 
-**Development status:** alpha. Desktop and mobile share the Rust scan model,
+**Release status:** 0.1.0. Desktop and mobile share the Rust scan model,
 recursive aggregation, treemap, and exports. Android and iOS use native storage
 providers and offer a native result browser alongside the canvas. Mobile
-runtime and device acceptance remain unverified; build checks are separate
-from those checks. See [platform support](docs/testing.md).
+runtime has been user-tested on Pixel 8 with Android 17. Full mobile acceptance,
+including accessibility and in-place upgrades, remains separate from build checks. See [platform support](docs/testing.md).
 
 ## Explore storage
 
@@ -88,21 +88,22 @@ an explicit partial result. These budgets guard stored node data, not total
 process memory. Provider cursors, filtering, font atlases, and the UI require
 additional memory. JSON exports stream to a temporary file before saving.
 
-## Download the alpha
+## Download
 
-[v0.1.0-alpha.3](https://github.com/0then0/spacemosaic/releases/tag/v0.1.0-alpha.3)
+[v0.1.0](https://github.com/0then0/spacemosaic/releases/tag/v0.1.0)
 provides downloads for all five platforms. macOS arm64 has runtime verification;
-the other platform builds remain experimental.
+Pixel 8 with Android 17 has user-reported runtime testing. Windows, Linux and iOS
+remain experimental; build success does not establish complete platform acceptance.
 
 | Platform | Architecture | Download | Status |
 | --- | --- | --- | --- |
-| Windows | x86-64 | [![Download Windows installer](https://img.shields.io/badge/Setup.exe-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDFoMTB2MTBIMXpNMTMgMWgxMHYxMEgxM3pNMSAxM2gxMHYxMEgxek0xMyAxM2gxMHYxMEgxM3oiLz48L3N2Zz4%3D&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-windows-amd64-setup.exe) [![Download Windows portable ZIP](https://img.shields.io/badge/Portable%20ZIP-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDFoMTB2MTBIMXpNMTMgMWgxMHYxMEgxM3pNMSAxM2gxMHYxMEgxek0xMyAxM2gxMHYxMEgxM3oiLz48L3N2Zz4%3D&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-windows-amd64.zip) | Experimental · unsigned |
-| macOS | Apple Silicon (arm64) | [![Download macOS DMG](https://img.shields.io/badge/DMG-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-darwin-arm64.dmg) [![Download macOS ZIP](https://img.shields.io/badge/ZIP-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-darwin-arm64.zip) | Alpha · ad-hoc signed |
-| Linux | x86-64 · Ubuntu 24.04 build | [![Download Linux DEB](https://img.shields.io/badge/DEB-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-linux-x86_64.deb) [![Download Linux portable TAR.GZ](https://img.shields.io/badge/Portable%20TAR.GZ-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-linux-x86_64.tar.gz) [![Download Linux ZIP](https://img.shields.io/badge/ZIP-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-linux-x86_64.zip) | Experimental |
-| Android 8.0+ | arm64-v8a / x86_64 | [![Download Android test APK](https://img.shields.io/badge/Test%20APK-3DDC84?style=for-the-badge&logo=android&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-debug.apk) | Experimental · debug signed |
-| iOS 16+ | arm64 · device and simulator | [![Download unsigned iOS device build](https://img.shields.io/badge/Device%20%C2%B7%20signing%20required-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-device.zip) [![Download iOS simulator app](https://img.shields.io/badge/Simulator-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-simulator.zip) | Experimental · device signing required |
+| Windows | x86-64 | [![Download Windows installer](https://img.shields.io/badge/Setup.exe-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDFoMTB2MTBIMXpNMTMgMWgxMHYxMEgxM3pNMSAxM2gxMHYxMEgxek0xMyAxM2gxMHYxMEgxM3oiLz48L3N2Zz4%3D&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/spacemosaic-windows-amd64-setup.exe) [![Download Windows portable ZIP](https://img.shields.io/badge/Portable%20ZIP-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDFoMTB2MTBIMXpNMTMgMWgxMHYxMEgxM3pNMSAxM2gxMHYxMEgxek0xMyAxM2gxMHYxMEgxM3oiLz48L3N2Zz4%3D&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/spacemosaic-windows-amd64.zip) | Experimental · unsigned |
+| macOS | Apple Silicon (arm64) | [![Download macOS DMG](https://img.shields.io/badge/DMG-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/spacemosaic-darwin-arm64.dmg) [![Download macOS ZIP](https://img.shields.io/badge/ZIP-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/spacemosaic-darwin-arm64.zip) | Ad-hoc signed |
+| Linux | x86-64 · Ubuntu 24.04 build | [![Download Linux DEB](https://img.shields.io/badge/DEB-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/spacemosaic-linux-x86_64.deb) [![Download Linux portable TAR.GZ](https://img.shields.io/badge/Portable%20TAR.GZ-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/spacemosaic-linux-x86_64.tar.gz) [![Download Linux ZIP](https://img.shields.io/badge/ZIP-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/spacemosaic-linux-x86_64.zip) | Experimental |
+| Android 8.0+ | arm64-v8a / x86_64 | [![Download Android APK](https://img.shields.io/badge/APK-3DDC84?style=for-the-badge&logo=android&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/spacemosaic-release.apk) | Release signed · Pixel 8 user-tested |
+| iOS 16+ | arm64 · device and simulator | [![Download unsigned iOS device build](https://img.shields.io/badge/Device%20%C2%B7%20signing%20required-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/spacemosaic-device.zip) [![Download iOS simulator app](https://img.shields.io/badge/Simulator-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/spacemosaic-simulator.zip) | Experimental · device signing required |
 
-For any release download, save [SHA256SUMS](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/SHA256SUMS)
+For any release download, save [SHA256SUMS](https://github.com/0then0/spacemosaic/releases/download/v0.1.0/SHA256SUMS)
 into the same directory. Verify only the files you downloaded:
 
 ```sh
@@ -124,11 +125,12 @@ with `sudo apt install ./spacemosaic-linux-x86_64.deb`, or extract a portable
 archive and run `spacemosaic`. Portable Linux builds still require compatible
 system libraries; the DEB declares their package dependencies.
 
-The currently published Android debug APK can be installed with the system
-package installer or `adb install`. It uses a debug signing key. The published
-alpha.2 and alpha.3 certificates differ; see the
-[compatibility audit](docs/android-distribution.md#published-apk-compatibility).
-Signatures can differ between CI runs, so in-place updates from earlier test builds are not guaranteed.
+The Android release APK is signed with the owner's persistent key. Future APKs
+with that identity and a higher versionCode can update it in place. Published
+alpha.2/alpha.3 debug APKs have different certificates and require one explicit
+uninstall before installing this release. Uninstalling clears application
+settings and retained folder grants; select folders again after installation.
+See the [compatibility audit](docs/android-distribution.md#published-apk-compatibility).
 
 The iOS device ZIP contains an **unsigned app**, not an installable IPA. Physical
 iPhones require provisioning and signing in Xcode. The simulator ZIP is only

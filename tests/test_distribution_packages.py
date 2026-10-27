@@ -119,14 +119,14 @@ class LinuxPackageTests(unittest.TestCase):
                 (ROOT / "THIRD_PARTY_NOTICES.txt").read_bytes(),
             )
 
-    def test_deb_has_installation_paths_alpha_version_and_root_ownership(self):
+    def test_deb_has_installation_paths_release_version_and_root_ownership(self):
         deb = DIST / f"{NAME}.deb"
         version = subprocess.check_output(
             ["dpkg-deb", "-f", str(deb), "Version"], text=True
         ).strip()
-        self.assertEqual(version, "0.1.0~alpha.3")
+        self.assertEqual(version, "0.1.0")
         subprocess.run(
-            ["dpkg", "--compare-versions", version, "lt", "0.1.0"], check=True
+            ["dpkg", "--compare-versions", version, "eq", "0.1.0"], check=True
         )
         with tempfile.TemporaryDirectory(prefix="spacemosaic-deb-test-") as temporary:
             subprocess.run(["dpkg-deb", "-x", str(deb), temporary], check=True)
@@ -209,7 +209,7 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertTrue((install / "THIRD_PARTY_NOTICES.txt").is_file())
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key) as key:
                     self.assertEqual(
-                        winreg.QueryValueEx(key, "DisplayVersion")[0], "0.1.0-alpha.3"
+                        winreg.QueryValueEx(key, "DisplayVersion")[0], "0.1.0"
                     )
                 sentinel = install / "user-owned.txt"
                 sentinel.write_text("Keep this unrelated file")

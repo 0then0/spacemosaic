@@ -23,9 +23,9 @@ import pathlib, plistlib, sys
 app = pathlib.Path(sys.argv[1])
 with (app / "Info.plist").open("rb") as source:
     info = plistlib.load(source)
-assert info["CFBundleGetInfoString"] == "SpaceMosaic 0.1.0-alpha.3"
-assert info["CFBundleVersion"] == "3"
-assert b"SpaceMosaic v0.1.0-alpha.3" in (app / "licenses/THIRD_PARTY_NOTICES.txt").read_bytes()
+assert info["CFBundleGetInfoString"] == "SpaceMosaic 0.1.0"
+assert info["CFBundleVersion"] == "4"
+assert b"SpaceMosaic v0.1.0" in (app / "licenses/THIRD_PARTY_NOTICES.txt").read_bytes()
 assert (app / "THIRD_PARTY_NOTICES.txt").read_bytes() == pathlib.Path("THIRD_PARTY_NOTICES.txt").read_bytes()
 CHECK_IOS
 mkdir -p dist

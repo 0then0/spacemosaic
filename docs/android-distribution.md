@@ -26,7 +26,14 @@ alpha.3 cannot update alpha.2 in place. No pair of published Android versions
 currently shares a signing identity. Certificate subjects alone do not identify
 a key. This audit read public APK certificates, not private keystores.
 
-A future release signed with a different key cannot update either debug APK.
+The owner-provided signing workflow [40549621223](https://github.com/0then0/spacemosaic/actions/runs/40549621223)
+successfully built a release-signed APK with versionName `0.1.0-alpha.3`, code `4`,
+and certificate SHA-256
+`2ac32743e1923d1dd6dc13d83e56b489becd0b8785dc1bee01fc27e66cd4e3da`.
+This is a CI artifact, distinct from the published alpha.3 debug APK.
+Version 0.1.0 uses this same identity and code `5`; retain that key for future updates.
+
+The release signing identity cannot update either published debug APK.
 Users must explicitly uninstall the old application once and install the new
 release. Uninstalling deletes application settings and retained SAF URI grants;
 users must select their folders again. Export any wanted results first. Files
@@ -53,7 +60,8 @@ For release builds, provide these environment variables explicitly:
 - `SPACEMOSAIC_ANDROID_CERT_SHA256`: expected certificate SHA-256, independently
   recorded by the owner; 64 hexadecimal digits, with optional colons.
 - `SPACEMOSAIC_ANDROID_PREVIOUS_VERSION_CODE`: highest code already distributed,
-  including debug versions (`3` after alpha.3).
+  including debug and previously shared signed builds (`4` after the signed
+  CI build linked below).
 
 Supply passwords through a password manager or silent shell input. Do not put
 values in command arguments, tracked files, terminal transcripts, shell history,
@@ -81,7 +89,7 @@ version metadata only). A failed build must not be distributed; old files in
 
 `versionName` is read from the root Cargo package version. Android's separate
 counter is `spacemosaicVersionCode` in `mobile/android/gradle.properties`;
-this change reserves code `4`, which is not yet published. Increase it for each
+version 0.1.0 uses code `5`, following the signed CI build with code `4`. Increase it for each
 new distributed APK, even for prereleases or rebuilds with a new version name.
 Never reset it when moving from alpha to stable. Update the Cargo version and
 versioned license notices together before the next release. The script requires
@@ -132,10 +140,10 @@ all-provider acceptance test. No Android runtime is installed in the local
 signing-audit environment, so an in-place update has **not** been runtime-verified.
 
 Use a disposable emulator with no personal data. Build A and B from disposable
-source copies with codes `4` and `5`, respectively (edit the same Gradle property),
+source copies with codes `6` and `7`, respectively (edit the same Gradle property),
 using a single temporary test key and its independently checked fingerprint.
 Keep the normal Cargo version and notices consistent in each copy. Use previous
-codes `3` and `4` for the respective builds. Never use production credentials.
+codes `5` and `6` for the respective builds. Never use production credentials.
 A test-only key may be created outside the checkout:
 
 ```sh

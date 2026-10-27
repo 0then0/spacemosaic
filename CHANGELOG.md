@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.0 — 2026-10-27
 
 - Add explicit Android release signing with an owner-provided persistent key,
   certificate and version checks, and a separate protected manual CI workflow.
