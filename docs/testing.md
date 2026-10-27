@@ -7,9 +7,10 @@ of evidence. Platform badges and release notes must not combine them.
 
 The desktop application builds and runs on macOS arm64. Alpha.2 was also
 exercised on Windows 11 and Pixel 8 with Android 17; those reports exposed UI
-and packaging regressions. Current fixes still need revalidation on that phone
-and Windows installation. Windows, macOS, Linux,
-Android APK packaging, and iOS simulator/device builds have passed GitHub
+and packaging regressions. The user subsequently confirmed relatively stable
+operation on Pixel 8 with Android 17. This does not verify signing, in-place updates, screen readers or
+every provider. Windows fixes still need revalidation on that installation.
+Windows, macOS, Linux, Android APK packaging, and iOS simulator/device builds have passed GitHub
 Actions. Consult the current workflow for each commit. Desktop runtime outside
 macOS, mobile picker/lifecycle behavior, screen readers, and physical devices
 still require verification. Recursive mobile analysis and native export are
@@ -152,3 +153,26 @@ For release qualification, record the commit, OS version, architecture,
 toolchain, build command, device/simulator model, and observed result. Include
 signing/notarization status and artifact SHA-256. Never include private paths,
 provider grants, signing secrets, or personal file names in public test reports.
+
+## Android distribution changes
+
+Run `python3 -m unittest discover -s tests -p test_android_distribution.py` for
+signing-input validation, monotonic version codes, identity/version rejection,
+and the release fail-fast path. The debug CI remains independent of credentials.
+[Android distribution](android-distribution.md) records the public APK certificate
+audit and the separate disposable A-to-B update procedure. An APK signature or
+packaging check does not prove settings/SAF retention across installation.
+
+Local signing validation on 2026-10-27 used macOS arm64, Temurin JDK 17.0.20.1,
+Gradle 9.8.2, AGP 9.4.1 and Android SDK Build Tools 36.0.0. Twelve targeted
+Python tests passed. A disposable source copy built debug without release
+credentials, and direct `assembleRelease` without credentials failed with the
+explicit signing error. Two release APKs (codes 4 and 5) were built with the same
+temporary test key; `apksigner`, manifest/version, non-debuggable, icon, ABI and
+license checks passed for both. Their certificates matched and codes increased.
+The private test key was then removed. This isolated Gradle/signing check reused
+the published alpha.3 Rust native libraries; it was not a fresh Rust/NDK build.
+No emulator was available, so installation, preference/URI retention and
+post-update scan/export remain unverified. Exact remaining commands and UI
+checks are in the distribution guide, without expanding the general mobile
+acceptance checklist.

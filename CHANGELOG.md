@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add explicit Android release signing with an owner-provided persistent key,
+  certificate and version checks, and a separate protected manual CI workflow.
+- Document published debug APK identities, migration and disposable upgrade checks.
+
 ## v0.1.0-alpha.3 — 2026-10-27
 
 ### Added

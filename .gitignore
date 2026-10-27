@@ -43,3 +43,8 @@ rustc-ice-*.txt
 /mobile/android/app/src/main/assets/licenses/THIRD_PARTY_NOTICES.txt
 /mobile/android/app/src/main/assets/licenses/OFL.txt
 /mobile/android/app/src/main/assets/licenses/README.md
+
+# Local Android signing material (never distribute with APKs).
+*.keystore.b64
+*.jks.b64
+.env.android-signing

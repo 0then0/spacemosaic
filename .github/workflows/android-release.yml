@@ -1,0 +1,66 @@
+name: Android signed APK
+on:
+  workflow_dispatch:
+    inputs:
+      previous_version_code:
+        description: Highest Android versionCode already distributed (including debug APKs)
+        required: true
+        type: string
+permissions:
+  contents: read
+
+jobs:
+  release:
+    # No PR events, arbitrary refs, reusable callers, or checkout inputs.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: android-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust Android targets
+        run: rustup toolchain install 1.99.1 --profile minimal --target aarch64-linux-android --target x86_64-linux-android
+      - name: Android SDK and NDK
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.14206865"
+      - run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Build and verify signed APK
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          SPACEMOSAIC_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          SPACEMOSAIC_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          SPACEMOSAIC_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          SPACEMOSAIC_ANDROID_CERT_SHA256: ${{ vars.ANDROID_RELEASE_CERT_SHA256 }}
+          SPACEMOSAIC_ANDROID_PREVIOUS_VERSION_CODE: ${{ inputs.previous_version_code }}
+        run: |
+          set +x
+          set -euo pipefail
+          umask 077
+          key_dir=$(mktemp -d "$RUNNER_TEMP/spacemosaic-signing.XXXXXXXX")
+          trap 'rm -rf -- "$key_dir"' EXIT
+          export SPACEMOSAIC_ANDROID_KEYSTORE="$key_dir/release.keystore"
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          value = os.environ.get("KEYSTORE_BASE64", "")
+          if not value:
+              raise SystemExit("ANDROID_RELEASE_KEYSTORE_BASE64 is required")
+          try:
+              decoded = base64.b64decode(value, validate=True)
+          except ValueError:
+              raise SystemExit("ANDROID_RELEASE_KEYSTORE_BASE64 is invalid") from None
+          Path(os.environ["SPACEMOSAIC_ANDROID_KEYSTORE"]).write_bytes(decoded)
+          PY
+          unset KEYSTORE_BASE64
+          bash scripts/build-android.sh release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-release
+          path: |
+            dist/spacemosaic-release.apk
+            dist/android-SHA256SUMS
+            dist/android-release-metadata.json
+          if-no-files-found: error

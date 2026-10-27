@@ -124,9 +124,11 @@ with `sudo apt install ./spacemosaic-linux-x86_64.deb`, or extract a portable
 archive and run `spacemosaic`. Portable Linux builds still require compatible
 system libraries; the DEB declares their package dependencies.
 
-The Android APK can be installed with the system package installer or `adb
-install`. It uses a debug signing key. Signatures can differ between CI runs,
-so in-place updates from earlier test builds are not guaranteed.
+The currently published Android debug APK can be installed with the system
+package installer or `adb install`. It uses a debug signing key. The published
+alpha.2 and alpha.3 certificates differ; see the
+[compatibility audit](docs/android-distribution.md#published-apk-compatibility).
+Signatures can differ between CI runs, so in-place updates from earlier test builds are not guaranteed.
 
 The iOS device ZIP contains an **unsigned app**, not an installable IPA. Physical
 iPhones require provisioning and signing in Xcode. The simulator ZIP is only
@@ -151,7 +153,9 @@ cargo run --release --locked -- /path/to/folder
 Desktop targets are Windows with MSVC, macOS, and Linux with X11/Wayland.
 Linux builds require a C/C++ compiler, pkg-config, libxkbcommon, Wayland, and EGL
 development packages. The CI workflow includes the Ubuntu package list.
-The full application is currently runtime-verified on macOS arm64 only.
+The application runs on macOS arm64. The user has also confirmed relatively
+stable operation on Pixel 8 with Android 17; this does not verify APK upgrades,
+screen readers or every document provider.
 Windows, Linux, macOS, Android APK, and iOS simulator/device builds have passed
 CI. Check the latest workflow for the current commit and artifact downloads.
 
@@ -221,7 +225,11 @@ adb shell am start -n dev.spacemosaic/dev.spacemosaic.StorageActivity
 
 Minimum Android API: 26. The Gradle 9.8.2 wrapper and Android Gradle Plugin 9.4.1
 are pinned. Developers accept SDK licenses when setting up their environment.
-The APK uses a locally generated debug key, without personal signing secrets.
+The default command produces a development debug APK. For a signed distribution
+APK with a persistent owner-provided identity, use the separate
+[Android release build and upgrade guide](docs/android-distribution.md).
+It documents signing inputs, CI isolation, versionCode, certificate verification
+and migration from published debug APKs. No production signing key is bundled.
 
 iOS uses the system document picker, security-scoped access, file coordination,
 and immediately available metadata. Access is limited to the selected provider
