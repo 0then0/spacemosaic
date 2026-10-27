@@ -19,7 +19,7 @@ provider acceptance.
 Current build outcomes and downloadable artifacts are recorded in
 [GitHub Actions](https://github.com/0then0/spacemosaic/actions/workflows/ci.yml).
 
-The `v0.1.0-alpha.2` prerelease distributes builds for all five platforms.
+The `v0.1.0-alpha.3` prerelease distributes builds for all five platforms.
 macOS arm64 is runtime-verified; Windows, Linux, Android, and iOS downloads remain
 experimental. No mobile device support is certified. The full mobile acceptance
 criteria remain open until runtime evidence is available. A published artifact

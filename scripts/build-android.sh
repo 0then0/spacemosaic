@@ -23,5 +23,5 @@ with zipfile.ZipFile("dist/spacemosaic-debug.apk") as package:
     assert package.testzip() is None
     for abi in ["arm64-v8a", "x86_64"]:
         assert f"lib/{abi}/libspacemosaic.so" in package.namelist()
-    assert b"SpaceMosaic v0.1.0-alpha.2" in package.read("assets/licenses/THIRD_PARTY_NOTICES.txt")
+    assert b"SpaceMosaic v0.1.0-alpha.3" in package.read("assets/licenses/THIRD_PARTY_NOTICES.txt")
 CHECK_APK

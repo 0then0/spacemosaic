@@ -90,19 +90,19 @@ additional memory. JSON exports stream to a temporary file before saving.
 
 ## Download the alpha
 
-[v0.1.0-alpha.2](https://github.com/0then0/spacemosaic/releases/tag/v0.1.0-alpha.2)
+[v0.1.0-alpha.3](https://github.com/0then0/spacemosaic/releases/tag/v0.1.0-alpha.3)
 provides downloads for all five platforms. macOS arm64 has runtime verification;
 the other platform builds remain experimental.
 
 | Platform | Architecture | Download | Status |
 | --- | --- | --- | --- |
-| Windows | x86-64 | [![Download Windows portable ZIP](https://img.shields.io/badge/Portable%20ZIP-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDFoMTB2MTBIMXpNMTMgMWgxMHYxMEgxM3pNMSAxM2gxMHYxMEgxek0xMyAxM2gxMHYxMEgxM3oiLz48L3N2Zz4%3D&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-windows-amd64.zip) | Experimental · unsigned |
-| macOS | Apple Silicon (arm64) | [![Download macOS DMG](https://img.shields.io/badge/DMG-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-darwin-arm64.dmg) [![Download macOS ZIP](https://img.shields.io/badge/ZIP-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-darwin-arm64.zip) | Alpha · ad-hoc signed |
-| Linux | x86-64 · Ubuntu 24.04 build | [![Download Linux DEB](https://img.shields.io/badge/DEB-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-linux-x86_64.deb) [![Download Linux portable TAR.GZ](https://img.shields.io/badge/Portable%20TAR.GZ-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-linux-x86_64.tar.gz) [![Download Linux ZIP](https://img.shields.io/badge/ZIP-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-linux-x86_64.zip) | Experimental |
-| Android 8.0+ | arm64-v8a / x86_64 | [![Download Android test APK](https://img.shields.io/badge/Test%20APK-3DDC84?style=for-the-badge&logo=android&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-debug.apk) | Experimental · debug signed |
-| iOS 16+ | arm64 · device and simulator | [![Download unsigned iOS device build](https://img.shields.io/badge/Device%20%C2%B7%20signing%20required-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-device.zip) [![Download iOS simulator app](https://img.shields.io/badge/Simulator-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/spacemosaic-simulator.zip) | Experimental · device signing required |
+| Windows | x86-64 | [![Download Windows installer](https://img.shields.io/badge/Setup.exe-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDFoMTB2MTBIMXpNMTMgMWgxMHYxMEgxM3pNMSAxM2gxMHYxMEgxek0xMyAxM2gxMHYxMEgxM3oiLz48L3N2Zz4%3D&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-windows-amd64-setup.exe) [![Download Windows portable ZIP](https://img.shields.io/badge/Portable%20ZIP-0078D4?style=for-the-badge&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xIDFoMTB2MTBIMXpNMTMgMWgxMHYxMEgxM3pNMSAxM2gxMHYxMEgxek0xMyAxM2gxMHYxMEgxM3oiLz48L3N2Zz4%3D&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-windows-amd64.zip) | Experimental · unsigned |
+| macOS | Apple Silicon (arm64) | [![Download macOS DMG](https://img.shields.io/badge/DMG-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-darwin-arm64.dmg) [![Download macOS ZIP](https://img.shields.io/badge/ZIP-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-darwin-arm64.zip) | Alpha · ad-hoc signed |
+| Linux | x86-64 · Ubuntu 24.04 build | [![Download Linux DEB](https://img.shields.io/badge/DEB-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-linux-x86_64.deb) [![Download Linux portable TAR.GZ](https://img.shields.io/badge/Portable%20TAR.GZ-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-linux-x86_64.tar.gz) [![Download Linux ZIP](https://img.shields.io/badge/ZIP-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-linux-x86_64.zip) | Experimental |
+| Android 8.0+ | arm64-v8a / x86_64 | [![Download Android test APK](https://img.shields.io/badge/Test%20APK-3DDC84?style=for-the-badge&logo=android&logoColor=black)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-debug.apk) | Experimental · debug signed |
+| iOS 16+ | arm64 · device and simulator | [![Download unsigned iOS device build](https://img.shields.io/badge/Device%20%C2%B7%20signing%20required-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-device.zip) [![Download iOS simulator app](https://img.shields.io/badge/Simulator-555555?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/spacemosaic-simulator.zip) | Experimental · device signing required |
 
-For any release download, save [SHA256SUMS](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.2/SHA256SUMS)
+For any release download, save [SHA256SUMS](https://github.com/0then0/spacemosaic/releases/download/v0.1.0-alpha.3/SHA256SUMS)
 into the same directory. Verify only the files you downloaded:
 
 ```sh
@@ -114,10 +114,9 @@ the ZIP and open `spacemosaic-darwin-arm64/SpaceMosaic.app`. The app is ad-hoc
 signed, without Developer ID signing or notarization. macOS may require approval
 in **System Settings → Privacy & Security** after the first launch attempt.
 
-Current [CI builds](https://github.com/0then0/spacemosaic/actions/workflows/ci.yml)
-also provide `spacemosaic-windows-amd64-setup.exe`. It installs into the current
+The Windows `spacemosaic-windows-amd64-setup.exe` installer installs into the current
 user's profile without administrator rights, adds a Start menu shortcut, and
-registers an uninstaller. Published alpha.2 Windows downloads remain portable.
+registers an uninstaller. A portable ZIP is also available.
 
 On Windows, extract the complete portable ZIP and run `spacemosaic.exe`.
 The executable has no Authenticode signature. On Ubuntu 24.04, install the DEB

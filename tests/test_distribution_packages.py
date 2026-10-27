@@ -124,7 +124,7 @@ class LinuxPackageTests(unittest.TestCase):
         version = subprocess.check_output(
             ["dpkg-deb", "-f", str(deb), "Version"], text=True
         ).strip()
-        self.assertEqual(version, "0.1.0~alpha.2")
+        self.assertEqual(version, "0.1.0~alpha.3")
         subprocess.run(
             ["dpkg", "--compare-versions", version, "lt", "0.1.0"], check=True
         )
@@ -209,7 +209,7 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertTrue((install / "THIRD_PARTY_NOTICES.txt").is_file())
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key) as key:
                     self.assertEqual(
-                        winreg.QueryValueEx(key, "DisplayVersion")[0], "0.1.0-alpha.2"
+                        winreg.QueryValueEx(key, "DisplayVersion")[0], "0.1.0-alpha.3"
                     )
                 sentinel = install / "user-owned.txt"
                 sentinel.write_text("Keep this unrelated file")

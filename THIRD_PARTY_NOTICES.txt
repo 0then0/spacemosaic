@@ -1,4 +1,4 @@
-SpaceMosaic v0.1.0-alpha.2 — third-party notices
+SpaceMosaic v0.1.0-alpha.3 — third-party notices
 
 Scope: Cargo dependencies resolved across Windows, macOS, Linux, Android, and
 iOS, including build dependencies and conservatively included optional and
