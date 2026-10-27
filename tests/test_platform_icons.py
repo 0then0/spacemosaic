@@ -93,7 +93,7 @@ class PlatformIconTests(unittest.TestCase):
     def test_windows_setup_icon_has_a_valid_256_pixel_png_representation(self):
         data = (ROOT / "assets/icon.ico").read_bytes()
         self.assertEqual(struct.unpack_from("<HHH", data), (0, 1, 1))
-        width, height, colors, reserved, planes, bits, size, offset = (
+        width, height, _colors, _reserved, planes, bits, size, offset = (
             struct.unpack_from("<BBBBHHII", data, 6)
         )
         self.assertEqual((width, height, planes, bits), (0, 0, 1, 32))
