@@ -4,6 +4,7 @@ import hashlib
 import os
 import pathlib
 import platform
+import re
 import struct
 import subprocess
 import tarfile
@@ -13,6 +14,7 @@ import unittest
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+VERSION = re.search(r'^version = "([^"\n]+)"$', (ROOT / "Cargo.toml").read_text(), re.MULTILINE)[1]
 SYSTEM = platform.system().lower()
 NAME = f"spacemosaic-{SYSTEM}-{platform.machine().lower()}"
 DIST = ROOT / "dist"
@@ -124,9 +126,9 @@ class LinuxPackageTests(unittest.TestCase):
         version = subprocess.check_output(
             ["dpkg-deb", "-f", str(deb), "Version"], text=True
         ).strip()
-        self.assertEqual(version, "0.1.0")
+        self.assertEqual(version, VERSION)
         subprocess.run(
-            ["dpkg", "--compare-versions", version, "eq", "0.1.0"], check=True
+            ["dpkg", "--compare-versions", version, "eq", VERSION], check=True
         )
         with tempfile.TemporaryDirectory(prefix="spacemosaic-deb-test-") as temporary:
             subprocess.run(["dpkg-deb", "-x", str(deb), temporary], check=True)
@@ -209,7 +211,7 @@ class WindowsPackageTests(unittest.TestCase):
                 self.assertTrue((install / "THIRD_PARTY_NOTICES.txt").is_file())
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key) as key:
                     self.assertEqual(
-                        winreg.QueryValueEx(key, "DisplayVersion")[0], "0.1.0"
+                        winreg.QueryValueEx(key, "DisplayVersion")[0], VERSION
                     )
                 sentinel = install / "user-owned.txt"
                 sentinel.write_text("Keep this unrelated file")

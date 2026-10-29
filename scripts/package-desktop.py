@@ -98,7 +98,7 @@ if system == "darwin":
                 "CFBundlePackageType": "APPL",
                 "CFBundleShortVersionString": version.split("-", 1)[0],
                 "CFBundleGetInfoString": f"SpaceMosaic {version}",
-                "CFBundleVersion": "4",
+                "CFBundleVersion": plistlib.loads((root / "mobile/ios/Info.plist").read_bytes())["CFBundleVersion"],
                 "CFBundleIconFile": "NSApplicationIcon.icns",
                 "NSHighResolutionCapable": True,
             },
