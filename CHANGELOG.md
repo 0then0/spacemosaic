@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Use a folder-selection start screen and a compact Files/Map workspace on
+  phones, with independently scrolling results, single-tap folder navigation,
+  proportional size bars and separate object details.
+- Move export, scan information and settings into mobile actions, and keep
+  system Back navigation within the current view before returning home.
+- Use provider-supplied folder names instead of encoded storage URIs in mobile
+  navigation; retain the original URI in details and exports.
+
+- Keep global search sizes and proportions tied to the scanned root; open file
+  type statistics from either phone view and cancel pending folder selections
+  with system Back even after browsing a nested folder.
+
 ## v0.1.0 — 2026-10-27
 
 - Add explicit Android release signing with an owner-provided persistent key,

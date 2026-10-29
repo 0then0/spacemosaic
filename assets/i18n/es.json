@@ -116,5 +116,18 @@
   "export_cancelled": "Exportación cancelada.",
   "provider_cycle": "Se omitió un directorio repetido del proveedor para evitar un ciclo.",
   "resize_map": "Arrastra para ajustar el mapa",
-  "export": "Exportar"
+  "export": "Exportar",
+  "phone_intro": "Descubre qué ocupa espacio",
+  "phone_intro_body": "Elige una carpeta para comparar sus archivos y subcarpetas. No se elimina nada.",
+  "phone_continue": "Seguir explorando",
+  "phone_list": "Archivos",
+  "phone_map": "Mapa",
+  "phone_more": "Más",
+  "phone_details": "Detalles",
+  "phone_scan_info": "Acerca de este análisis",
+  "phone_filter": "Buscar y ordenar",
+  "phone_map_hint": "Toca un elemento para ver sus detalles. Puedes abrir una carpeta desde sus detalles.",
+  "phone_location": "Ubicación de la carpeta",
+  "phone_start": "Elegir otra carpeta",
+  "phone_scan_body": "Puedes dejar esta pantalla abierta mientras se calcula el tamaño de la carpeta."
 }

@@ -31,6 +31,9 @@ pub struct Listing {
     pub generation: u64,
     pub status: Status,
     pub scope: Option<String>,
+    /// Provider-supplied display name, kept separate from its opaque locator.
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub entries: Vec<Entry>,
     pub truncated: bool,
     pub persisted: bool,
@@ -160,6 +163,10 @@ pub fn set_waker(wake: Wake) {
     *waker().lock().unwrap_or_else(|p| p.into_inner()) = Some(wake);
 }
 
+// Serialize tests that exercise the process-wide native session.
+#[cfg(test)]
+pub(crate) static SESSION_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +176,7 @@ mod tests {
             generation,
             status: Status::Ready,
             scope: Some("content://provider/tree/a".into()),
+            display_name: None,
             entries: vec![Entry {
                 name: "unknown".into(),
                 locator: "content://provider/document/a".into(),
@@ -189,6 +197,21 @@ mod tests {
         assert_eq!(parsed, value);
         assert_eq!(parsed.unknown_file_sizes(), 1);
         assert_eq!(parsed.entries[0].logical_bytes, None);
+    }
+
+    #[test]
+    fn display_name_is_optional_and_does_not_change_the_storage_locator() {
+        let original = listing(1);
+        let mut value = serde_json::to_value(&original).unwrap();
+        value.as_object_mut().unwrap().remove("display_name");
+        assert_eq!(
+            Listing::parse(&serde_json::to_vec(&value).unwrap()).unwrap(),
+            original
+        );
+        value["display_name"] = serde_json::json!("Audiobooks 日本語");
+        let parsed = Listing::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(parsed.display_name.as_deref(), Some("Audiobooks 日本語"));
+        assert_eq!(parsed.scope, original.scope);
     }
 
     #[test]

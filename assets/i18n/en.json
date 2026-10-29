@@ -116,5 +116,18 @@
   "export_cancelled": "Export cancelled.",
   "provider_cycle": "Skipped a repeated provider directory to prevent a cycle.",
   "resize_map": "Drag to resize the map",
-  "export": "Export"
+  "export": "Export",
+  "phone_intro": "See what takes up space",
+  "phone_intro_body": "Choose a folder to compare its files and subfolders. Nothing is deleted.",
+  "phone_continue": "Continue exploring",
+  "phone_list": "Files",
+  "phone_map": "Map",
+  "phone_more": "More",
+  "phone_details": "Details",
+  "phone_scan_info": "About this scan",
+  "phone_filter": "Search and sort",
+  "phone_map_hint": "Tap an item to inspect it. Open a folder from its details.",
+  "phone_location": "Folder location",
+  "phone_start": "Choose another folder",
+  "phone_scan_body": "You can leave this screen open while the folder is being measured."
 }

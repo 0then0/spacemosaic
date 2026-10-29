@@ -116,5 +116,18 @@
   "export_cancelled": "エクスポートをキャンセルしました。",
   "provider_cycle": "循環を防ぐため、重複するプロバイダのフォルダをスキップしました。",
   "resize_map": "ドラッグしてマップの高さを変更",
-  "export": "エクスポート"
+  "export": "エクスポート",
+  "phone_intro": "容量を使っているものを確認",
+  "phone_intro_body": "フォルダを選んで、ファイルやサブフォルダのサイズを比較します。何も削除されません。",
+  "phone_continue": "表示を続ける",
+  "phone_list": "ファイル",
+  "phone_map": "マップ",
+  "phone_more": "その他",
+  "phone_details": "詳細",
+  "phone_scan_info": "このスキャンについて",
+  "phone_filter": "検索と並べ替え",
+  "phone_map_hint": "項目をタップすると詳細を確認できます。フォルダは詳細画面から開けます。",
+  "phone_location": "フォルダの場所",
+  "phone_start": "別のフォルダを選ぶ",
+  "phone_scan_body": "フォルダのサイズを計算している間、この画面を開いたままにできます。"
 }

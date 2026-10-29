@@ -321,3 +321,19 @@ fn late_cleanup_from_an_older_scan_cannot_cancel_or_close_the_new_scan() {
     current.close_directory();
     assert_eq!(*active.lock().unwrap(), None);
 }
+
+#[test]
+fn provider_display_name_is_independent_from_an_encoded_root_uri() {
+    let uri = "content://provider/tree/primary%3AAudiobooks/document/primary%3AAudiobooks";
+    let transport: Transport =
+        Arc::new(|_| Ok(json!({"entries":[],"done":true,"error":null}).to_string()));
+    let provider = Provider::new(uri.into(), 1, transport.clone())
+        .with_display_name(Some("Audiobooks 日本語".into()));
+    let root = provider.root();
+    assert_eq!(root.name, "Audiobooks 日本語");
+    assert_eq!(root.locator, uri);
+    assert_eq!(root.native_locator, uri);
+    assert!(root.path.is_none());
+    let unnamed = Provider::new(uri.into(), 2, transport).with_display_name(Some("  ".into()));
+    assert!(!unnamed.root().name.is_empty());
+}

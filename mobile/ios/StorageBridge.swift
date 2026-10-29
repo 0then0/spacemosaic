@@ -26,9 +26,10 @@ private func encoded(_ value: [String: Any]) -> String {
 }
 @discardableResult
 private func send(_ generation: UInt64, status: String, scope: String? = nil,
-                  persisted: Bool = false, error: String? = nil) -> Bool {
+                  persisted: Bool = false, error: String? = nil, displayName: String? = nil) -> Bool {
     let text = encoded(["generation": generation, "status": status,
-        "scope": scope.map { $0 as Any } ?? NSNull(), "entries": [],
+        "scope": scope.map { $0 as Any } ?? NSNull(),
+        "display_name": displayName.map { $0 as Any } ?? NSNull(), "entries": [],
         "truncated": false, "persisted": persisted,
         "error": error.map { $0 as Any } ?? NSNull()])
     let data = Data(text.utf8)
@@ -277,8 +278,22 @@ private final class PickerBridge: NSObject, UIDocumentPickerDelegate {
         picker = nil
         guard let url = urls.first else { send(generation, status: "cancelled"); return }
         guard spacemosaic_is_current(generation) else { return }
+        let generation = self.generation
         nativeStorage.select(url, generation: generation)
-        send(generation, status: "ready", scope: url.absoluteString)
+        // Provider metadata can block, and must be coordinated while scoped access is held.
+        DispatchQueue.global(qos: .userInitiated).async {
+            var name: String?
+            if let access = try? ScopeAccess(url) {
+                defer { access.close() }
+                var error: NSError?
+                NSFileCoordinator().coordinate(readingItemAt: url, options: .immediatelyAvailableMetadataOnly, error: &error) { coordinated in
+                    name = try? coordinated.resourceValues(forKeys: [.nameKey]).name
+                }
+            }
+            if spacemosaic_is_current(generation) {
+                send(generation, status: "ready", scope: url.absoluteString, displayName: name)
+            }
+        }
     }
     func save(_ id: UInt64, url: URL) {
         guard exportDelegate == nil && picker == nil, let presenter = Self.presenter() else { spacemosaic_export_done(id, 0); return }

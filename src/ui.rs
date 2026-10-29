@@ -9,7 +9,9 @@ use crate::{
     theme::{self, Appearance},
     treemap,
 };
+mod phone;
 use eframe::egui::{self, RichText};
+use phone::{PhoneOverlay, PhoneView};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::path::Path;
 use std::{
@@ -43,6 +45,10 @@ impl ExtensionColumn {
 }
 
 pub struct ExplorerApp {
+    compact_layout: bool,
+    phone_home: bool,
+    phone_view: PhoneView,
+    phone_overlay: Option<PhoneOverlay>,
     language: usize,
     preferences: Preferences,
     preferences_path: Option<PathBuf>,
@@ -142,6 +148,10 @@ impl ExplorerApp {
     }
     fn empty() -> Self {
         Self {
+            compact_layout: false,
+            phone_home: true,
+            phone_view: PhoneView::List,
+            phone_overlay: None,
             language: i18n::system_language(),
             preferences: Preferences::default(),
             preferences_path: None,
@@ -212,6 +222,8 @@ impl ExplorerApp {
         }
     }
     pub fn start(&mut self, path: PathBuf) {
+        self.phone_home = false;
+        self.phone_overlay = None;
         self.job = Some(self.service.start(
             path.clone(),
             scan::Options {
@@ -235,9 +247,12 @@ impl ExplorerApp {
         self.map_group = None;
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    fn start_provider(&mut self, generation: u64, root: String) {
+    fn start_provider(&mut self, generation: u64, root: String, display_name: Option<String>) {
+        self.phone_home = false;
+        self.phone_overlay = None;
         let provider =
-            crate::provider::Provider::new(root.clone(), generation, crate::mobile::transport());
+            crate::provider::Provider::new(root.clone(), generation, crate::mobile::transport())
+                .with_display_name(display_name);
         let job = self.service.start_storage(
             Box::new(provider),
             scan::Options {
@@ -267,7 +282,8 @@ impl ExplorerApp {
     fn rescan(&mut self) {
         #[cfg(any(target_os = "android", target_os = "ios"))]
         if let Some((generation, root)) = self.provider_scope.clone() {
-            self.start_provider(generation, root);
+            let display_name = self.result.as_ref().map(|r| r.nodes[0].name.clone());
+            self.start_provider(generation, root, display_name);
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         if let Some(path) = self.scope.clone() {
@@ -292,12 +308,14 @@ impl ExplorerApp {
             #[cfg(target_os = "ios")]
             let launched = crate::ios::pick(generation);
             self.mobile_busy = launched;
+            self.phone_home = !launched;
             if !launched {
                 self.notice = Some("unavailable");
             }
         }
     }
     fn navigate(&mut self, index: usize) {
+        self.phone_overlay = None;
         self.directory = index;
         self.expanded.insert(index);
         self.selected = Some(index);
@@ -322,6 +340,7 @@ impl ExplorerApp {
     }
     fn open_group(&mut self) {
         if self.map_group.is_none() && !self.grouped.is_empty() {
+            self.phone_view = PhoneView::List;
             self.map_group = Some(self.grouped.clone());
             self.dirty = true;
         }
@@ -493,7 +512,9 @@ impl ExplorerApp {
                             self.save(json);
                         }
                     }
-                    Command::Back => self.back(),
+                    Command::Back => {
+                        self.phone_back();
+                    }
                     Command::CloseSettings => self.settings_open = false,
                     Command::Allocated(allocated) => {
                         self.allocated = allocated;
@@ -537,6 +558,7 @@ impl ExplorerApp {
                 crate::mobile::publish(*generation, result.clone());
             }
             self.result = Some(result);
+            self.phone_home = false;
             self.job = None;
             self.dirty = true;
         }
@@ -546,7 +568,19 @@ impl ExplorerApp {
             if listing.status == bridge::Status::Ready
                 && let Some(root) = &listing.scope
             {
-                self.start_provider(listing.generation, root.clone());
+                self.start_provider(
+                    listing.generation,
+                    root.clone(),
+                    listing.display_name.clone(),
+                );
+            }
+            if listing.status != bridge::Status::Ready {
+                self.phone_home = true;
+                self.notice = Some(match listing.status {
+                    bridge::Status::Cancelled => "cancelled",
+                    bridge::Status::Denied => "denied",
+                    _ => "unavailable",
+                });
             }
             self.preview = Some(listing);
         }
@@ -1185,17 +1219,19 @@ impl ExplorerApp {
         };
         let language = self.language;
         let t = |key| i18n::text(language, key);
-        ui.label(
-            RichText::new(t("treemap"))
-                .small()
-                .color(theme::accent(ui.visuals().dark_mode)),
-        );
-        ui.label(RichText::new(t("map_help")).small().weak());
         let selected_tile = self.map_selected;
-        if let Some(index) = self.selected {
-            let path = format!("{}: {}", t("selected_item"), result.nodes[index].locator);
-            ui.add(egui::Label::new(&path).truncate())
-                .on_hover_text(path);
+        if !self.compact_layout {
+            ui.label(
+                RichText::new(t("treemap"))
+                    .small()
+                    .color(theme::accent(ui.visuals().dark_mode)),
+            );
+            ui.label(RichText::new(t("map_help")).small().weak());
+            if let Some(index) = self.selected {
+                let path = format!("{}: {}", t("selected_item"), result.nodes[index].locator);
+                ui.add(egui::Label::new(&path).truncate())
+                    .on_hover_text(path);
+            }
         }
         let objects = self.map_objects.clone();
         let weights = self.map_weights.clone();
@@ -1284,6 +1320,9 @@ impl ExplorerApp {
             {
                 if let Some(index) = objects[position] {
                     self.select(index);
+                    if self.compact_layout {
+                        self.phone_overlay = Some(PhoneOverlay::Details);
+                    }
                 } else {
                     self.open_group();
                 }
@@ -1325,6 +1364,9 @@ impl ExplorerApp {
             .corner_radius(10)
             .show(ui, |ui| {
                 ui.label(RichText::new(&node.name).strong());
+                if self.compact_layout {
+                    ui.label(RichText::new(t("phone_location")).small().weak());
+                }
                 ui.label(&node.locator);
                 ui.label(format!(
                     "{}: {}",
@@ -1679,7 +1721,11 @@ impl ExplorerApp {
             .ctx()
             .input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft))
         {
-            self.back();
+            if self.compact_layout {
+                self.phone_back();
+            } else {
+                self.back();
+            }
         }
         egui::CentralPanel::default()
             .frame(
@@ -1691,6 +1737,11 @@ impl ExplorerApp {
                 #[cfg(target_os = "ios")]
                 ui.set_max_height((ui.available_height() - 80.0).max(0.0));
                 let desktop = ui.available_width() >= 700.0 && ui.available_height() >= 600.0;
+                self.compact_layout = !desktop;
+                if !desktop {
+                    self.phone(ui);
+                    return;
+                }
                 if desktop {
                     ui.spacing_mut().interact_size.y = 30.0;
                     ui.spacing_mut().button_padding.y = 5.0;
@@ -1744,7 +1795,20 @@ impl ExplorerApp {
             });
         self.settings_window(ui.ctx());
         #[cfg(any(target_os = "android", target_os = "ios"))]
-        crate::mobile::focus(self.directory, self.map_group.is_some(), self.settings_open);
+        crate::mobile::focus(
+            if self.compact_layout && self.phone_home {
+                0
+            } else {
+                self.directory
+            },
+            !self.phone_home && self.map_group.is_some(),
+            self.settings_open,
+            self.compact_layout
+                && (!self.phone_home
+                    || self.mobile_busy
+                    || self.job.is_some()
+                    || self.phone_overlay.is_some()),
+        );
     }
 }
 // Stable colors keep the same folder or file type recognizable across navigation.
@@ -2033,6 +2097,7 @@ mod tests {
             nodes,
         }));
         app.language = 0;
+        app.phone_home = false;
         app
     }
     fn frame(
@@ -2090,55 +2155,51 @@ mod tests {
         frame(app, context, vec![])
     }
     #[test]
-    fn phone_export_buttons_do_not_turn_into_vertical_letter_columns() {
+    fn phone_actions_live_in_more_and_export_formats_remain_available() {
         for language in 0..i18n::TAGS.len() {
             let context = egui::Context::default();
             theme::install(&context);
             context.set_fonts(crate::fonts::definitions());
             let mut app = fixture();
             app.language = language;
+            let size = egui::vec2(360.0, 800.0);
             for _ in 0..4 {
-                frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+                frame_at(&mut app, &context, vec![], size);
             }
-            let output = frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
-            for key in ["choose", "rescan", "export"] {
-                let label = i18n::text(language, key);
-                let text = output
-                    .shapes
-                    .iter()
-                    .find_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text) if text.galley.text() == label => Some(text),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| panic!("missing phone action: {language} {key}"));
-                assert_eq!(
-                    text.galley.rows.len(),
-                    1,
-                    "wrapped phone action: {language} {key}"
+            let output = frame_at(&mut app, &context, vec![], size);
+            let pos = text_position(&output, i18n::text(language, "phone_more"));
+            for pressed in [true, false] {
+                frame_at(
+                    &mut app,
+                    &context,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                    size,
                 );
-                assert!(
-                    text.pos.y + text.galley.size().y < 330.0,
-                    "phone toolbar consumes the page: {language} {key}"
-                );
+            }
+            assert_eq!(app.phone_overlay, Some(PhoneOverlay::Actions));
+            let output = frame_at(&mut app, &context, vec![], size);
+            for key in ["rescan", "export_json", "export_csv"] {
+                let pos = text_position(&output, i18n::text(language, key));
+                assert!(pos.x >= 0.0 && pos.x < size.x && pos.y < size.y);
             }
         }
     }
-    #[test]
-    fn compact_export_menu_keeps_both_formats_available() {
-        let context = egui::Context::default();
-        theme::install(&context);
-        context.set_fonts(crate::fonts::definitions());
-        let mut app = fixture();
+    fn phone_click(app: &mut ExplorerApp, context: &egui::Context, label: &str) {
         let size = egui::vec2(360.0, 800.0);
-        for _ in 0..4 {
-            frame_at(&mut app, &context, vec![], size);
-        }
-        let output = frame_at(&mut app, &context, vec![], size);
-        let pos = text_position(&output, "Export");
+        let output = frame_at(app, context, vec![], size);
+        let pos = text_position(&output, label);
         for pressed in [true, false] {
             frame_at(
-                &mut app,
-                &context,
+                app,
+                context,
                 vec![
                     egui::Event::PointerMoved(pos),
                     egui::Event::PointerButton {
@@ -2151,11 +2212,219 @@ mod tests {
                 size,
             );
         }
-        let output = frame_at(&mut app, &context, vec![], size);
-        for label in ["Export JSON", "Export CSV"] {
-            let pos = text_position(&output, label);
-            assert!(pos.x >= 0.0 && pos.x < size.x && pos.y < size.y);
+    }
+    #[test]
+    fn phone_folder_navigation_map_selection_and_back_preserve_the_result() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = fixture();
+        let result = app.result.clone().unwrap();
+        for _ in 0..4 {
+            frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
         }
+        phone_click(&mut app, &context, "Photos");
+        assert_eq!(app.directory, 1, "folders open with a single tap");
+        assert_eq!(app.selected, Some(1));
+        phone_click(&mut app, &context, "Map");
+        assert_eq!(app.phone_view, PhoneView::Map);
+        let output = frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+        let color = tile_color(Some(&result.nodes[2]));
+        let rect = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == color => Some(r.rect),
+                _ => None,
+            })
+            .expect("visible map tile");
+        for pressed in [true, false] {
+            frame_at(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(rect.center()),
+                    egui::Event::PointerButton {
+                        pos: rect.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+                egui::vec2(360.0, 800.0),
+            );
+        }
+        assert_eq!(app.selected, Some(2));
+        assert_eq!(app.phone_overlay, Some(PhoneOverlay::Details));
+        app.phone_back();
+        assert_eq!(app.phone_overlay, None);
+        app.phone_back();
+        assert_eq!(app.directory, 0);
+        app.phone_back();
+        assert!(app.phone_home);
+        assert!(!app.phone_back(), "Back on Home is left to the platform");
+        assert!(Arc::ptr_eq(&result, app.result.as_ref().unwrap()));
+        phone_click(&mut app, &context, "Continue exploring");
+        assert!(!app.phone_home);
+        assert_eq!(app.phone_view, PhoneView::Map);
+    }
+    #[test]
+    fn phone_filter_opens_file_type_statistics_and_map_returns_to_folders() {
+        for initial_view in [PhoneView::List, PhoneView::Map] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            context.set_fonts(crate::fonts::definitions());
+            let mut app = fixture();
+            app.extensions = app.result.as_ref().unwrap().extensions();
+            app.phone_view = initial_view;
+            app.query = "old search".into();
+            app.phone_overlay = Some(PhoneOverlay::Filter);
+            for _ in 0..4 {
+                frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+            }
+            phone_click(&mut app, &context, "File types");
+            assert!(app.page == Page::Extensions);
+            assert_eq!(app.phone_view, PhoneView::List);
+            assert!(app.query.is_empty());
+            let output = frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="jpg"))
+            );
+            assert!(
+                !output.shapes.iter().any(|s| matches!(&s.shape,
+            egui::Shape::Text(t) if t.galley.text() == i18n::text(0, "search_hint"))),
+                "File types must not expose an inactive search field"
+            );
+            phone_click(&mut app, &context, "Map");
+            assert!(app.page == Page::Directory);
+            assert_eq!(app.phone_view, PhoneView::Map);
+        }
+    }
+    #[test]
+    fn phone_viewport_keeps_content_visible_in_all_languages_themes_and_large_text() {
+        for language in 0..i18n::TAGS.len() {
+            for appearance in [Appearance::Light, Appearance::Dark] {
+                let context = egui::Context::default();
+                theme::install(&context);
+                context.set_fonts(crate::fonts::definitions());
+                context.set_theme(appearance.preference());
+                let mut app = fixture();
+                app.language = language;
+                for (size, zoom) in [
+                    (egui::vec2(360.0, 800.0), 1.0),
+                    (egui::vec2(360.0, 800.0), 1.6),
+                    (egui::vec2(800.0, 400.0), 1.0),
+                ] {
+                    context.set_zoom_factor(zoom);
+                    for view in [PhoneView::List, PhoneView::Map] {
+                        app.phone_view = view;
+                        for _ in 0..4 {
+                            frame_at(&mut app, &context, vec![], size);
+                        }
+                        let output = frame_at(&mut app, &context, vec![], size);
+                        let screen = context.content_rect();
+                        for key in ["phone_list", "phone_map", "phone_more"] {
+                            let pos = text_position(&output, i18n::text(language, key));
+                            assert!(
+                                screen.contains(pos),
+                                "{key} offscreen: {language}, {size:?}, {zoom}"
+                            );
+                        }
+                        if view == PhoneView::List {
+                            let pos = text_position(&output, "Photos");
+                            assert!(
+                                pos.y < screen.height() * 0.65,
+                                "content pushed below controls: {language}, {size:?}, zoom {zoom}, {pos:?}, {screen:?}"
+                            );
+                            assert!(screen.contains(pos));
+                        } else {
+                            let color = tile_color(Some(&app.result.as_ref().unwrap().nodes[1]));
+                            let rect = output
+                                .shapes
+                                .iter()
+                                .find_map(|s| match &s.shape {
+                                    egui::Shape::Rect(r) if r.fill == color => {
+                                        Some(r.rect.intersect(s.clip_rect))
+                                    }
+                                    _ => None,
+                                })
+                                .expect("map visible without scrolling");
+                            assert!(
+                                rect.height() > screen.height() * 0.25,
+                                "map squeezed: {rect:?}, {screen:?}"
+                            );
+                            assert!(
+                                rect.bottom()
+                                    <= text_position(&output, i18n::text(language, "phone_map")).y
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn phone_rows_align_names_and_proportions_use_the_selected_size_measure() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        context.set_theme(Appearance::Light.preference());
+        let mut app = fixture();
+        let result = Arc::make_mut(app.result.as_mut().unwrap());
+        for (index, known) in [(0, 1000), (1, 100), (4, 900)] {
+            result.nodes[index].allocated = scan::Measure {
+                known,
+                ..Default::default()
+            };
+        }
+        app.allocated = true;
+        for _ in 0..4 {
+            frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+        }
+        let output = frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+        let x = |name: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == name => Some(t.pos.x),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!(
+            (x("Photos") - x("notes.txt")).abs() < 1.0,
+            "row names must share a left edge"
+        );
+        let fill = theme::accent(false).gamma_multiply(0.12);
+        let widths: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == fill => Some(r.rect.width()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(widths.len(), 2);
+        assert!(
+            (widths[0] / widths[1] - 9.0).abs() < 0.01,
+            "bars must use allocated bytes, not logical bytes"
+        );
+    }
+    #[test]
+    fn phone_back_during_scan_cancels_without_entering_invisible_home() {
+        let files = preferences::tests::Fixture::new();
+        let mut app = ExplorerApp::empty();
+        app.start(files.path().parent().unwrap().to_owned());
+        assert!(!app.phone_home);
+        assert!(app.phone_back());
+        assert!(
+            !app.phone_home,
+            "progress remains visible until the partial result arrives"
+        );
     }
     #[test]
     fn settings_close_stays_inside_safe_area_after_rotation_and_large_text() {
@@ -2534,7 +2803,6 @@ mod tests {
                     (egui::vec2(1180.0, 900.0), 1.0),
                     (egui::vec2(744.0, 684.0), 1.0),
                     (egui::vec2(1180.0, 900.0), 1.6),
-                    (egui::vec2(320.0, 640.0), 1.0),
                 ] {
                     context.set_zoom_factor(zoom);
                     for _ in 0..4 {
@@ -2928,5 +3196,83 @@ mod tests {
         assert_eq!(app.map_group.as_ref().unwrap().len(), 25000);
         assert_eq!(app.rows.len(), 25000);
         assert!(app.grouped.is_empty());
+        app.phone_home = false;
+        for _ in 0..4 {
+            frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+        }
+        let output = frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+        let names = output.shapes.iter().filter(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().starts_with("item-"))).count();
+        assert!(
+            names > 1 && names < 40,
+            "the phone must virtualize the whole group, drew {names} names"
+        );
+        assert_eq!(app.rows.len(), 25000);
+        assert_eq!(app.phone_view, PhoneView::List);
+    }
+    #[test]
+    fn phone_back_cancels_pending_selection_before_stale_navigation() {
+        let _session = bridge::SESSION_TEST_LOCK.lock().unwrap();
+        for grouped in [false, true] {
+            let mut app = fixture();
+            app.navigate(1);
+            if grouped {
+                app.map_group = Some(vec![2]);
+            }
+            // A second native picker clears the result before its metadata arrives.
+            app.result = None;
+            app.job = None;
+            app.mobile_busy = true;
+            app.phone_home = false;
+            assert!(app.phone_back());
+            assert!(!app.mobile_busy);
+            assert!(app.phone_home);
+            assert_eq!(app.notice, Some("cancelled"));
+        }
+    }
+    #[test]
+    fn phone_global_results_use_root_title_size_and_proportions() {
+        for search in [false, true] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            context.set_fonts(crate::fonts::definitions());
+            context.set_theme(Appearance::Light.preference());
+            let mut app = fixture();
+            let result = Arc::make_mut(app.result.as_mut().unwrap());
+            result.nodes[0].logical.known = 1100;
+            result.nodes[4].logical.known = 1000;
+            app.navigate(1);
+            if search {
+                app.query = ".".into();
+            } else {
+                app.page = Page::Largest;
+            }
+            for _ in 0..4 {
+                frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+            }
+            let output = frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+            assert!(
+                app.rows.contains(&4),
+                "global results include the sibling file"
+            );
+            assert_eq!(app.phone_scope(), 0);
+            assert!(text_position(&output, "Scope").y < 80.0);
+            let fill = theme::accent(false).gamma_multiply(0.12);
+            let widths: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Rect(r) if r.fill == fill => Some(r.rect.width()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(widths.len(), 2);
+            assert!(
+                (widths[0] / widths[1] - 10.0).abs() < 0.01,
+                "global bars must use the root total instead of saturating at the folder total"
+            );
+            app.query.clear();
+            app.page = Page::Directory;
+            assert_eq!(app.phone_scope(), 1, "ordinary browsing retains its folder");
+        }
     }
 }

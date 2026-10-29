@@ -47,7 +47,7 @@ public final class StorageActivity extends NativeActivity {
     private int idColumn, nameColumn, mimeColumn, sizeColumn;
     private boolean pickerOpen, restored, browserLoading, browserAgain, allocated;
     private volatile boolean destroyed;
-    private volatile CancellationSignal cancellation;
+    private volatile CancellationSignal cancellation, metadataCancellation;
     // Only the single Rust scanner worker opens, reads, and closes this cursor.
     private Cursor cursor;
     private Uri cursorTree;
@@ -368,6 +368,7 @@ public final class StorageActivity extends NativeActivity {
         runOnUiThread(() -> {
             if (pickerOpen) { send(generation, "unavailable", null, false, "picker_busy"); return; }
             CancellationSignal signal = cancellation; if (signal != null) signal.cancel();
+            signal = metadataCancellation; if (signal != null) signal.cancel();
             directory = 0; directories.clear(); offset = 0; offsets.clear(); browserQuery = ""; mode = "directory"; if (search != null) search.setText(""); lastMessage = null;
             pickerGeneration = generation; pickerOpen = true;
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
@@ -378,7 +379,19 @@ public final class StorageActivity extends NativeActivity {
     }
     private void ready(long generation, Uri tree, boolean persisted) {
         Uri root = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
-        send(generation, "ready", root.toString(), persisted, null);
+        CancellationSignal signal = new CancellationSignal();
+        metadataCancellation = signal;
+        // A provider may perform IPC even for its folder label. Keep it off the UI thread.
+        worker.execute(() -> {
+            String name = null;
+            try (Cursor metadata = getContentResolver().query(root,
+                    new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null, signal)) {
+                if (metadata != null && metadata.moveToFirst() && !metadata.isNull(0)) name = metadata.getString(0);
+            } catch (Exception error) { /* A missing label must not replace the real scan/access outcome. */ }
+            finally { if (metadataCancellation == signal) metadataCancellation = null; }
+            if (!destroyed && !signal.isCanceled() && isCurrent(generation))
+                send(generation, "ready", root.toString(), persisted, null, name);
+        });
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
@@ -412,9 +425,13 @@ public final class StorageActivity extends NativeActivity {
         ready(pickerGeneration, tree, persisted);
     }
     private void send(long generation, String status, String scope, boolean persisted, String error) {
+        send(generation, status, scope, persisted, error, null);
+    }
+    private void send(long generation, String status, String scope, boolean persisted, String error, String displayName) {
         try {
             JSONObject value = new JSONObject().put("generation", generation).put("status", status)
-                .put("scope", scope == null ? JSONObject.NULL : scope).put("entries", new JSONArray())
+                .put("scope", scope == null ? JSONObject.NULL : scope)
+                .put("display_name", displayName == null ? JSONObject.NULL : displayName).put("entries", new JSONArray())
                 .put("truncated", false).put("persisted", persisted).put("error", error == null ? JSONObject.NULL : error);
             if (deliver(value.toString())) runOnUiThread(() -> { if (isCurrent(generation)) { lastMessage = value; refreshBrowser(); } });
         } catch (Exception errorEncoding) { throw new IllegalStateException("bridge_encoding", errorEncoding); }
@@ -518,6 +535,7 @@ public final class StorageActivity extends NativeActivity {
         if (android.os.Build.VERSION.SDK_INT >= 33 && backCallback != null)
             BackCallbacks.unregister(this, backCallback);
         CancellationSignal signal = cancellation; if (signal != null) signal.cancel();
+        signal = metadataCancellation; if (signal != null) signal.cancel();
         handler.removeCallbacksAndMessages(null);
         if (browserDialog != null) browserDialog.dismiss();
         if (exportSource != null) exportDone(exportId, 0);

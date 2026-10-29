@@ -116,5 +116,18 @@
   "export_cancelled": "Exportação cancelada.",
   "provider_cycle": "Uma pasta repetida do provedor foi ignorada para evitar um ciclo.",
   "resize_map": "Arraste para ajustar a altura do mapa",
-  "export": "Exportar"
+  "export": "Exportar",
+  "phone_intro": "Veja o que ocupa espaço",
+  "phone_intro_body": "Escolha uma pasta para comparar seus arquivos e subpastas. Nada é excluído.",
+  "phone_continue": "Continuar explorando",
+  "phone_list": "Arquivos",
+  "phone_map": "Mapa",
+  "phone_more": "Mais",
+  "phone_details": "Detalhes",
+  "phone_scan_info": "Sobre esta análise",
+  "phone_filter": "Buscar e ordenar",
+  "phone_map_hint": "Toque em um item para ver os detalhes. Você pode abrir uma pasta pelos detalhes dela.",
+  "phone_location": "Local da pasta",
+  "phone_start": "Escolher outra pasta",
+  "phone_scan_body": "Você pode deixar esta tela aberta enquanto o tamanho da pasta é calculado."
 }

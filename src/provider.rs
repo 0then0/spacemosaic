@@ -47,6 +47,7 @@ fn measure(value: Option<u64>) -> Measure {
 
 pub struct Provider {
     root: String,
+    display_name: Option<String>,
     generation: u64,
     scan_id: u64,
     transport: Transport,
@@ -62,6 +63,7 @@ impl Provider {
             .expect("provider session IDs exhausted");
         Self {
             root,
+            display_name: None,
             generation,
             scan_id,
             transport,
@@ -69,6 +71,11 @@ impl Provider {
             done: false,
             error: None,
         }
+    }
+    /// Names are presentation metadata; the native URI remains unchanged.
+    pub fn with_display_name(mut self, display_name: Option<String>) -> Self {
+        self.display_name = display_name.filter(|name| !name.trim().is_empty());
+        self
     }
     fn request(&self, operation: &str, locator: Option<&str>) -> Result<Page, String> {
         let request =
@@ -92,13 +99,14 @@ impl Storage for Provider {
     fn root(&self) -> Node {
         Node {
             parent: None,
-            name: self
-                .root
-                .trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .unwrap_or(&self.root)
-                .into(),
+            name: self.display_name.clone().unwrap_or_else(|| {
+                self.root
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&self.root)
+                    .to_owned()
+            }),
             locator: self.root.clone(),
             native_locator: self.root.clone(),
             kind: Kind::Directory,

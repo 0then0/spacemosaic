@@ -176,3 +176,22 @@ No emulator was available, so installation, preference/URI retention and
 post-update scan/export remain unverified. Exact remaining commands and UI
 checks are in the distribution guide, without expanding the general mobile
 acceptance checklist.
+
+## Phone workspace
+
+Headless egui tests cover the start/result transition, single-tap folder opening,
+shared list/map selection, object details, Back navigation and scan cancellation.
+They check viewport bounds in all seven languages, both themes, increased text
+scale and portrait/landscape sizes. The large-group regression also verifies
+that the phone paints only visible rows from a 25,000-object list. Native
+provider tests keep display names separate from storage locators.
+
+Desktop-rendered phone-size previews use disposable synthetic folders; they are
+layout evidence, not Android/iOS device acceptance. Device checks still need to
+confirm system Back, safe areas/keyboard, picker return and accessibility with
+the actual platform bridges.
+
+Regression tests also cover opening file types from either result view, hiding
+unsupported extension search, using the scanned root for global result sizes
+and bars, and cancelling a second pending folder selection after nested or
+grouped navigation.

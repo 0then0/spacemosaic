@@ -116,5 +116,18 @@
   "export_cancelled": "Export abgebrochen.",
   "provider_cycle": "Ein wiederholter Anbieterordner wurde übersprungen, um einen Zyklus zu vermeiden.",
   "resize_map": "Ziehen, um die Kartenhöhe zu ändern",
-  "export": "Exportieren"
+  "export": "Exportieren",
+  "phone_intro": "Erkennen, was Platz belegt",
+  "phone_intro_body": "Wähle einen Ordner, um seine Dateien und Unterordner zu vergleichen. Es wird nichts gelöscht.",
+  "phone_continue": "Weiter erkunden",
+  "phone_list": "Dateien",
+  "phone_map": "Karte",
+  "phone_more": "Mehr",
+  "phone_details": "Details",
+  "phone_scan_info": "Über diesen Scan",
+  "phone_filter": "Suchen und sortieren",
+  "phone_map_hint": "Tippe auf ein Element, um Details anzuzeigen. Ordner lassen sich über ihre Details öffnen.",
+  "phone_location": "Speicherort des Ordners",
+  "phone_start": "Anderen Ordner wählen",
+  "phone_scan_body": "Du kannst diesen Bildschirm geöffnet lassen, während die Ordnergröße ermittelt wird."
 }

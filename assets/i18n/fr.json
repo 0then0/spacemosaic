@@ -116,5 +116,18 @@
   "export_cancelled": "Export annulé.",
   "provider_cycle": "Un dossier répété du fournisseur a été ignoré pour éviter une boucle.",
   "resize_map": "Faire glisser pour redimensionner la carte",
-  "export": "Exporter"
+  "export": "Exporter",
+  "phone_intro": "Découvrez ce qui prend de la place",
+  "phone_intro_body": "Choisissez un dossier pour comparer ses fichiers et sous-dossiers. Rien n’est supprimé.",
+  "phone_continue": "Continuer l’exploration",
+  "phone_list": "Fichiers",
+  "phone_map": "Carte",
+  "phone_more": "Plus",
+  "phone_details": "Détails",
+  "phone_scan_info": "À propos de cette analyse",
+  "phone_filter": "Rechercher et trier",
+  "phone_map_hint": "Touchez un élément pour voir ses détails. Vous pouvez ouvrir un dossier depuis ses détails.",
+  "phone_location": "Emplacement du dossier",
+  "phone_start": "Choisir un autre dossier",
+  "phone_scan_body": "Vous pouvez laisser cet écran ouvert pendant le calcul de la taille du dossier."
 }

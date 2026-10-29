@@ -190,6 +190,13 @@ an unsigned portable archive.
 Verify downloads with `shasum -a 256 -c <manifest>` or, on Windows,
 `Get-FileHash -Algorithm SHA256 <archive>`.
 
+On phones, choose a folder on the start screen, then switch between **Files**
+and **Map** in the result workspace. Tap a folder to open it or use its info
+button for details. **More** contains search/sort options, scan information,
+settings, rescan and export. Full paths and provider URIs are kept in details,
+not in the main navigation. Back returns through details and folders to the
+start screen; the completed result remains available through Continue exploring.
+
 ## Mobile development
 
 Mobile applications use native eframe rendering and platform bridges, without

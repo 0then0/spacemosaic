@@ -103,10 +103,12 @@ pub fn publish(generation: u64, result: Arc<scan::ScanResult>) {
         };
     }
 }
-pub fn focus(directory: usize, grouped: bool, settings_open: bool) {
+/// Advertise Back for the current canvas screen as well as folder navigation.
+/// Native Android Back must dismiss a result/overlay before exiting the Activity.
+pub fn focus(directory: usize, grouped: bool, settings_open: bool, can_view_back: bool) {
     let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
     state.directory = directory;
-    state.can_back = directory != 0 || grouped;
+    state.can_back = directory != 0 || grouped || can_view_back;
     state.settings_open = settings_open;
 }
 pub fn back() -> bool {
@@ -566,6 +568,7 @@ mod tests {
     }
     #[test]
     fn native_commands_reject_old_generations_and_old_result_rows_after_rescan() {
+        let _session = bridge::SESSION_TEST_LOCK.lock().unwrap();
         let generation = bridge::begin();
         publish(generation, Arc::new(result(2)));
         let accepted: Value = serde_json::from_str(&page(
@@ -588,13 +591,19 @@ mod tests {
         assert_eq!(rejected["accepted"], false);
         assert!(matches!(take_command(), Some(Command::Rescan)));
         assert!(take_command().is_none());
-        focus(0, false, true);
+        focus(0, false, true, true);
         assert!(
             back(),
             "Android Back must dismiss settings before leaving the app"
         );
         assert!(matches!(take_command(), Some(Command::CloseSettings)));
-        focus(0, false, false);
+        focus(0, false, false, true);
+        assert!(
+            back(),
+            "Android Back must leave the result screen before exiting"
+        );
+        assert!(matches!(take_command(), Some(Command::Back)));
+        focus(0, false, false, false);
         assert!(!back());
         assert_eq!(
             serde_json::from_str::<Value>(&page("{}")).unwrap()["status"],
