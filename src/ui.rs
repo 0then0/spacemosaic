@@ -512,12 +512,19 @@ impl ExplorerApp {
                             self.save(json);
                         }
                     }
+                    Command::Search(query) => {
+                        self.query = query;
+                        self.dirty = true;
+                    }
                     Command::Back => {
                         self.phone_back();
                     }
                     Command::CloseSettings => self.settings_open = false,
                     Command::Allocated(allocated) => {
-                        self.allocated = allocated;
+                        self.allocated = allocated
+                            && self.result.as_ref().is_some_and(|r| {
+                                r.nodes[0].allocated.known > 0 || r.nodes[0].allocated.unknown == 0
+                            });
                         self.dirty = true;
                     }
                     Command::Language(index) => {
@@ -556,6 +563,9 @@ impl ExplorerApp {
             #[cfg(any(target_os = "android", target_os = "ios"))]
             if let Some((generation, _)) = &self.provider_scope {
                 crate::mobile::publish(*generation, result.clone());
+            }
+            if result.nodes[0].allocated.known == 0 && result.nodes[0].allocated.unknown > 0 {
+                self.allocated = false;
             }
             self.result = Some(result);
             self.phone_home = false;
@@ -1367,7 +1377,7 @@ impl ExplorerApp {
                 if self.compact_layout {
                     ui.label(RichText::new(t("phone_location")).small().weak());
                 }
-                ui.label(&node.locator);
+                ui.label(readable_locator(&node.locator));
                 ui.label(format!(
                     "{}: {}",
                     t("logical_bytes"),
@@ -1727,72 +1737,79 @@ impl ExplorerApp {
                 self.back();
             }
         }
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(ui.visuals().panel_fill)
-                    .inner_margin(egui::Margin::same(16)),
-            )
-            .show(ui, |ui| {
-                #[cfg(target_os = "ios")]
-                ui.set_max_height((ui.available_height() - 80.0).max(0.0));
-                let desktop = ui.available_width() >= 700.0 && ui.available_height() >= 600.0;
-                self.compact_layout = !desktop;
-                if !desktop {
-                    self.phone(ui);
-                    return;
-                }
-                if desktop {
-                    ui.spacing_mut().interact_size.y = 30.0;
-                    ui.spacing_mut().button_padding.y = 5.0;
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                }
-                if desktop {
-                    self.header(ui);
-                    ui.add_space(12.0);
-                } else {
-                    ui.spacing_mut().interact_size.y = 48.0;
-                }
-                egui::ScrollArea::vertical()
-                    .id_salt("workspace")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if !desktop {
-                            self.header(ui);
-                            ui.add_space(12.0);
-                        }
-                        self.summary(ui);
-                        if self.result.is_some() {
-                            ui.add_space(12.0);
-                            self.navigation(ui);
-                            self.refresh_rows();
-                            ui.add_space(12.0);
-                            if self.page == Page::Extensions {
-                                self.extension_table(ui);
+        let safe = ui
+            .available_rect_before_wrap()
+            .intersect(ui.ctx().content_rect());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(safe), |ui| {
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(ui.visuals().panel_fill)
+                        .inner_margin(egui::Margin::same(16)),
+                )
+                .show(ui, |ui| {
+                    #[cfg(target_os = "ios")]
+                    ui.set_max_height((ui.available_height() - 80.0).max(0.0));
+                    let desktop = ui.available_width() >= 700.0 && ui.available_height() >= 600.0;
+                    self.compact_layout = !desktop;
+                    if !desktop {
+                        self.phone(ui);
+                        return;
+                    }
+                    if desktop {
+                        ui.spacing_mut().interact_size.y = 30.0;
+                        ui.spacing_mut().button_padding.y = 5.0;
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                    }
+                    if desktop {
+                        self.header(ui);
+                        ui.add_space(12.0);
+                    } else {
+                        ui.spacing_mut().interact_size.y = 48.0;
+                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("workspace")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if !desktop {
+                                self.header(ui);
                                 ui.add_space(12.0);
-                                self.details(ui);
-                            } else {
-                                self.object_workspace(ui, desktop);
                             }
-                        } else if self.job.is_none() && self.preview.is_none() {
-                            let language = self.language;
-                            let t = |key| i18n::text(language, key);
-                            ui.add_space(36.0);
-                            ui.label(RichText::new(t("empty_heading")).size(30.0));
-                            ui.label(t(if cfg!(any(target_os = "android", target_os = "ios")) {
-                                "mobile_scope"
-                            } else {
-                                "empty_body"
-                            }));
-                            ui.add_space(14.0);
-                            ui.label(RichText::new(t("privacy_note")).weak());
-                        }
-                        #[cfg(any(target_os = "android", target_os = "ios"))]
-                        if self.result.is_none() && self.job.is_none() {
-                            self.mobile_preview(ui);
-                        }
-                    });
-            });
+                            self.summary(ui);
+                            if self.result.is_some() {
+                                ui.add_space(12.0);
+                                self.navigation(ui);
+                                self.refresh_rows();
+                                ui.add_space(12.0);
+                                if self.page == Page::Extensions {
+                                    self.extension_table(ui);
+                                    ui.add_space(12.0);
+                                    self.details(ui);
+                                } else {
+                                    self.object_workspace(ui, desktop);
+                                }
+                            } else if self.job.is_none() && self.preview.is_none() {
+                                let language = self.language;
+                                let t = |key| i18n::text(language, key);
+                                ui.add_space(36.0);
+                                ui.label(RichText::new(t("empty_heading")).size(30.0));
+                                ui.label(t(
+                                    if cfg!(any(target_os = "android", target_os = "ios")) {
+                                        "mobile_scope"
+                                    } else {
+                                        "empty_body"
+                                    },
+                                ));
+                                ui.add_space(14.0);
+                                ui.label(RichText::new(t("privacy_note")).weak());
+                            }
+                            #[cfg(any(target_os = "android", target_os = "ios"))]
+                            if self.result.is_none() && self.job.is_none() {
+                                self.mobile_preview(ui);
+                            }
+                        });
+                });
+        });
         self.settings_window(ui.ctx());
         #[cfg(any(target_os = "android", target_os = "ios"))]
         crate::mobile::focus(
@@ -1810,6 +1827,25 @@ impl ExplorerApp {
                     || self.phone_overlay.is_some()),
         );
     }
+}
+// Presentation only: native actions and exports retain the original locator.
+fn readable_locator(locator: &str) -> String {
+    let mut decoded = Vec::with_capacity(locator.len());
+    let mut bytes = locator.as_bytes().iter().copied();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let (Some(a), Some(b)) = (bytes.next(), bytes.next()) else {
+                return locator.into();
+            };
+            let (Some(a), Some(b)) = ((a as char).to_digit(16), (b as char).to_digit(16)) else {
+                return locator.into();
+            };
+            decoded.push((a * 16 + b) as u8);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    String::from_utf8(decoded).unwrap_or_else(|_| locator.into())
 }
 // Stable colors keep the same folder or file type recognizable across navigation.
 fn tile_color(node: Option<&scan::Node>) -> egui::Color32 {
@@ -3273,6 +3309,94 @@ mod tests {
             app.query.clear();
             app.page = Page::Directory;
             assert_eq!(app.phone_scope(), 1, "ordinary browsing retains its folder");
+        }
+    }
+    #[test]
+    fn readable_uri_keeps_unicode_and_never_changes_machine_locator() {
+        let uri = "content://provider/document/%D0%A0%D0%BE%D0%B1%D0%B8%D0%BD%2F%E6%97%A5%E6%9C%AC";
+        assert_eq!(
+            readable_locator(uri),
+            "content://provider/document/Робин/日本"
+        );
+        assert!(uri.contains("%D0"));
+        for value in ["%FF", "%x0", "%", "/literal%filename"] {
+            assert_eq!(readable_locator(value), value);
+        }
+    }
+    #[test]
+    fn unicode_queries_match_names_in_every_supported_language() {
+        for (name, query) in [
+            ("Робин Хобб", "РОБИН"),
+            ("Straße", "straße"),
+            ("日本語", "日本"),
+            ("Français", "FRANÇAIS"),
+            ("Español", "ESPAÑOL"),
+            ("Português", "PORTUGUÊS"),
+            ("English", "ENGLISH"),
+        ] {
+            let mut app = fixture();
+            Arc::make_mut(app.result.as_mut().unwrap()).nodes[4].name = name.into();
+            assert_eq!(
+                app.result.as_ref().unwrap().search(query, true, Sort::Size),
+                vec![4]
+            );
+        }
+    }
+    #[test]
+    fn phone_screens_respect_system_bars_and_explain_unavailable_allocation() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = fixture();
+        Arc::make_mut(app.result.as_mut().unwrap()).nodes[0].allocated = scan::Measure {
+            unknown: 5,
+            ..Default::default()
+        };
+        app.language = 0;
+        for (home, overlay) in [
+            (true, None),
+            (false, None),
+            (false, Some(PhoneOverlay::Details)),
+            (false, Some(PhoneOverlay::Actions)),
+            (false, Some(PhoneOverlay::Filter)),
+        ] {
+            app.phone_home = home;
+            app.phone_overlay = overlay;
+            for _ in 0..4 {
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(412.0, 915.0),
+                        )),
+                        safe_area_insets: Some(egui::SafeAreaInsets(egui::epaint::MarginF32 {
+                            top: 40.0,
+                            bottom: 30.0,
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    },
+                    |ui| app.draw(ui),
+                );
+                output.textures_delta.clear();
+                for shape in &output.shapes {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && shape
+                            .clip_rect
+                            .intersects(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    {
+                        assert!(
+                            text.pos.y >= 40.0,
+                            "text under system bar: {}",
+                            text.galley.text()
+                        );
+                    }
+                }
+                if overlay == Some(PhoneOverlay::Filter) {
+                    text_position(&output, i18n::text(0, "allocated_unavailable"));
+                    assert!(!app.allocated);
+                }
+            }
         }
     }
 }

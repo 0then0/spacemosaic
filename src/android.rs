@@ -242,3 +242,19 @@ pub extern "system" fn Java_dev_spacemosaic_StorageActivity_setInsets<'local>(
     })
     .resolve::<ThrowRuntimeExAndDefault>();
 }
+
+pub fn search(query: &str) {
+    with_activity(|env, activity| {
+        let query = JString::from_str(env, query)?;
+        env.call_method(
+            activity,
+            jni_str!("showSearch"),
+            jni_sig!("(Ljava/lang/String;J)V"),
+            &[
+                JValue::Object(query.as_ref()),
+                JValue::Long(crate::bridge::generation() as i64),
+            ],
+        )?;
+        Ok(())
+    });
+}

@@ -129,5 +129,6 @@
   "phone_map_hint": "Tippe auf ein Element, um Details anzuzeigen. Ordner lassen sich über ihre Details öffnen.",
   "phone_location": "Speicherort des Ordners",
   "phone_start": "Anderen Ordner wählen",
-  "phone_scan_body": "Du kannst diesen Bildschirm geöffnet lassen, während die Ordnergröße ermittelt wird."
+  "phone_scan_body": "Du kannst diesen Bildschirm geöffnet lassen, während die Ordnergröße ermittelt wird.",
+  "allocated_unavailable": "Dieser Speicheranbieter meldet keinen belegten Speicher. Angezeigt werden die Dateigrößen."
 }

@@ -215,15 +215,33 @@ impl ExplorerApp {
         if self.phone_view == PhoneView::List && self.page != Page::Extensions {
             ui.horizontal(|ui| {
                 let width = (ui.available_width() - 56.0).max(1.0);
+                #[cfg(not(target_os = "android"))]
                 let response = ui.add_sized(
                     [width, 48.0],
                     egui::TextEdit::singleline(&mut self.query).hint_text(t("search_hint")),
                 );
+                #[cfg(not(target_os = "android"))]
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, t("search"))
                 });
+                #[cfg(not(target_os = "android"))]
                 if response.changed() {
                     self.dirty = true;
+                }
+                #[cfg(target_os = "android")]
+                if ui
+                    .add_sized(
+                        [width, 48.0],
+                        egui::Button::new(if self.query.is_empty() {
+                            t("search_hint")
+                        } else {
+                            &self.query
+                        })
+                        .truncate(),
+                    )
+                    .clicked()
+                {
+                    crate::android::search(&self.query);
                 }
                 if Self::phone_icon(ui, "⇅", t("phone_filter")) {
                     self.phone_overlay = Some(PhoneOverlay::Filter);
@@ -525,8 +543,20 @@ impl ExplorerApp {
                             self.dirty = true;
                         }
                     }
-                    if ui.checkbox(&mut self.allocated, t("allocated")).changed() {
+                    let available = self.result.as_ref().is_some_and(|r| {
+                        r.nodes[0].allocated.known > 0 || r.nodes[0].allocated.unknown == 0
+                    });
+                    if ui
+                        .add_enabled(
+                            available,
+                            egui::Checkbox::new(&mut self.allocated, t("allocated")),
+                        )
+                        .changed()
+                    {
                         self.dirty = true;
+                    }
+                    if !available {
+                        ui.label(t("allocated_unavailable"));
                     }
                 }
             });

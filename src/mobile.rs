@@ -41,8 +41,9 @@ impl WindowInsets {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Command {
+    Search(String),
     Rescan,
     Cancel,
     Export(bool),
@@ -132,8 +133,9 @@ fn enqueue(generation: u64, command: Command) -> bool {
     if queue.len() >= 8 {
         return false;
     }
+    let rescan = matches!(command, Command::Rescan);
     queue.push_back((generation, command));
-    if matches!(command, Command::Rescan) {
+    if rescan {
         let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
         state.result = None;
         state.progress = Some(Arc::new(Mutex::new(scan::Progress::default())));
@@ -163,6 +165,7 @@ pub fn page(request: &str) -> String {
             .and_then(|v| usize::try_from(v).ok())
             .unwrap_or(0);
         let command = match command {
+            "search" => Command::Search(request["query"].as_str().unwrap_or("").to_owned()),
             "rescan" => Command::Rescan,
             "cancel" => Command::Cancel,
             "json" => Command::Export(true),
@@ -222,6 +225,9 @@ fn result_page(result: &scan::ScanResult, generation: u64, request: &Value) -> V
         })
         .unwrap_or(0);
     let query = request["query"].as_str().unwrap_or("");
+    let allocated_available =
+        result.nodes[0].allocated.known > 0 || result.nodes[0].allocated.unknown == 0;
+    let allocated = allocated_available && request["allocated"].as_bool() == Some(true);
     let mode = request["mode"].as_str().unwrap_or("directory");
     let language = request["language"]
         .as_str()
@@ -254,14 +260,14 @@ fn result_page(result: &scan::ScanResult, generation: u64, request: &Value) -> V
         } else {
             result.children(directory, "", sort)
         };
-        if request["allocated"].as_bool() == Some(true) && sort == scan::Sort::Size {
+        if allocated && sort == scan::Sort::Size {
             rows.sort_by_key(|index| std::cmp::Reverse(result.nodes[*index].allocated.known));
         }
         let offset = offset.min(rows.len());
         let entries: Vec<_> = rows.iter().skip(offset).take(provider::PAGE_ENTRIES).map(|index| {
             let n = &result.nodes[*index];
             json!({"id":index,"name":n.name,"locator":n.locator,"directory":n.kind == scan::Kind::Directory,
-                "size_label":display_measure(language,if request["allocated"].as_bool()==Some(true) {n.allocated} else {n.logical}),"logical_label":display_measure(language,n.logical),"allocated_label":display_measure(language,n.allocated),"hard_link":n.hard_link,
+                "size_label":display_measure(language,if allocated {n.allocated} else {n.logical}),"logical_label":display_measure(language,n.logical),"allocated_label":display_measure(language,n.allocated),"hard_link":n.hard_link,
                 "complete":n.complete,"error":n.error,"scan_note":if n.kind==scan::Kind::Directory && !n.complete {crate::i18n::text(language,"incomplete_directory")} else {""}})
         }).collect();
         (rows.len(), offset, entries)
@@ -270,6 +276,7 @@ fn result_page(result: &scan::ScanResult, generation: u64, request: &Value) -> V
         "scope":result.scope,"summary":format!("{} · {} · {}",crate::i18n::counted(language,result.nodes.len() as u64,"object"),display_measure(language,result.nodes[0].logical),crate::i18n::counted(language,result.errors,"error")),
         "directory":directory,"parent":result.nodes[directory].parent,"name":result.nodes[directory].name,
         "offset":offset,"total":total});
+    response["allocated_available"] = json!(allocated_available);
     if let Some(reason) = result.incomplete_reason() {
         let summary = response["summary"].as_str().unwrap_or_default();
         response["summary"] = json!(format!(
@@ -576,6 +583,15 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(accepted["accepted"], true);
+        let query = "Робин 日本語 Português";
+        let response: Value = serde_json::from_str(&page(
+            &json!({"command":"search","generation":generation,"query":query}).to_string(),
+        ))
+        .unwrap();
+        assert_eq!(response["accepted"], true);
+        assert!(matches!(take_command(), Some(Command::Navigate(1))));
+        assert!(matches!(take_command(), Some(Command::Search(actual)) if actual == query));
+        page(&json!({"command":"navigate","index":1,"generation":generation}).to_string());
         let newer = bridge::begin();
         assert!(take_command().is_none());
         assert_eq!(
@@ -634,5 +650,19 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(receiver.try_recv().unwrap(), ExportOutcome::Cancelled);
         assert!(exports().lock().unwrap().is_none());
+    }
+    #[test]
+    fn unavailable_allocation_preserves_known_sizes_in_native_results() {
+        let mut result = result(2);
+        result.nodes[0].allocated = scan::Measure {
+            unknown: 2,
+            ..Default::default()
+        };
+        let page = result_page(&result, 1, &json!({"allocated":true}));
+        assert_eq!(page["allocated_available"], false);
+        for entry in page["entries"].as_array().unwrap() {
+            assert_eq!(entry["size_label"], entry["logical_label"]);
+            assert_ne!(entry["size_label"], entry["allocated_label"]);
+        }
     }
 }

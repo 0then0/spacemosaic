@@ -129,5 +129,6 @@
   "phone_map_hint": "Toque em um item para ver os detalhes. Você pode abrir uma pasta pelos detalhes dela.",
   "phone_location": "Local da pasta",
   "phone_start": "Escolher outra pasta",
-  "phone_scan_body": "Você pode deixar esta tela aberta enquanto o tamanho da pasta é calculado."
+  "phone_scan_body": "Você pode deixar esta tela aberta enquanto o tamanho da pasta é calculado.",
+  "allocated_unavailable": "Este provedor não informa o espaço alocado. São exibidos os tamanhos dos arquivos."
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Keep phone screens inside system safe areas and increase secondary text size.
+- Use a native Android search editor for multilingual keyboard composition.
+- Display decoded Unicode locations while preserving original URIs for actions
+  and exports; explain unavailable allocation metadata and retain logical sizes.
+
 ## v0.1.1 — 2026-10-29
 
 - Use a folder-selection start screen and a compact Files/Map workspace on

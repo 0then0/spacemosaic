@@ -129,5 +129,6 @@
   "phone_map_hint": "Toca un elemento para ver sus detalles. Puedes abrir una carpeta desde sus detalles.",
   "phone_location": "Ubicación de la carpeta",
   "phone_start": "Elegir otra carpeta",
-  "phone_scan_body": "Puedes dejar esta pantalla abierta mientras se calcula el tamaño de la carpeta."
+  "phone_scan_body": "Puedes dejar esta pantalla abierta mientras se calcula el tamaño de la carpeta.",
+  "allocated_unavailable": "Este proveedor no informa del espacio asignado. Se muestran los tamaños de los archivos."
 }

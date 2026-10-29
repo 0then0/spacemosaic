@@ -129,5 +129,6 @@
   "phone_map_hint": "Tap an item to inspect it. Open a folder from its details.",
   "phone_location": "Folder location",
   "phone_start": "Choose another folder",
-  "phone_scan_body": "You can leave this screen open while the folder is being measured."
+  "phone_scan_body": "You can leave this screen open while the folder is being measured.",
+  "allocated_unavailable": "Allocated space is not provided by this storage provider. File sizes are shown instead."
 }

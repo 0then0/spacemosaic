@@ -129,5 +129,6 @@
   "phone_map_hint": "Touchez un élément pour voir ses détails. Vous pouvez ouvrir un dossier depuis ses détails.",
   "phone_location": "Emplacement du dossier",
   "phone_start": "Choisir un autre dossier",
-  "phone_scan_body": "Vous pouvez laisser cet écran ouvert pendant le calcul de la taille du dossier."
+  "phone_scan_body": "Vous pouvez laisser cet écran ouvert pendant le calcul de la taille du dossier.",
+  "allocated_unavailable": "Ce fournisseur ne fournit pas l’espace alloué. Les tailles des fichiers sont affichées."
 }

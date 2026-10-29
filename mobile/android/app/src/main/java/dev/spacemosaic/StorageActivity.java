@@ -153,6 +153,28 @@ public final class StorageActivity extends NativeActivity {
                 (android.window.OnBackInvokedCallback)callback);
         }
     }
+    // NativeActivity key events cannot carry arbitrary IME composition. Use a
+    // native editor for multilingual input, then return the unchanged Unicode query.
+    public void showSearch(String query, long generation) {
+        runOnUiThread(() -> {
+            final long session = generation;
+            EditText editor = new EditText(viewContext());
+            editor.setSingleLine(true); editor.setText(query); editor.setSelection(query.length());
+            editor.setContentDescription(text("search"));
+            AlertDialog dialog = new AlertDialog.Builder(viewContext()).setTitle(text("search"))
+                .setView(editor).setNegativeButton(text("cancel"), null)
+                .setPositiveButton(android.R.string.ok, (which, button) -> {
+                    try { resultPage(new JSONObject().put("command", "search").put("generation", session)
+                        .put("query", editor.getText().toString()).toString()); }
+                    catch (org.json.JSONException error) { /* No command was submitted. */ }
+                }).create();
+            dialog.setOnShowListener(ignored -> {
+                editor.requestFocus();
+                dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+            });
+            dialog.show();
+        });
+    }
     private void reportInsets(android.view.View content) {
         if (lastInsets == null || content.getWidth() == 0 || content.getHeight() == 0 || launcher.getHeight() == 0) return;
         int left,top,right,bottom;
@@ -303,6 +325,7 @@ public final class StorageActivity extends NativeActivity {
         addText(text("mobile_scope")); addText(text("size_caveat")); addText(text(status)); addText(page.optString("summary"));
         if (!page.isNull("error")) addText(text(page.optString("error")));
         if (page.has("name")) addText(page.optString("name"));
+        if (allocated && !page.optBoolean("allocated_available", true)) addText(text("allocated_unavailable"));
         parent = page.optLong("parent", 0);
         if (directory != 0) browserRows.addView(button("back", () -> navigate(directories.isEmpty() ? parent : directories.removeLast(), false)));
         JSONArray entries = page.optJSONArray("entries");
