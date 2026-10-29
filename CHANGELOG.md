@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.2 — 2026-10-29
 
 - Keep phone screens inside system safe areas and increase secondary text size.
 - Use a native Android search editor for multilingual keyboard composition.

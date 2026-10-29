@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "spacemosaic"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "eframe",
  "fastframe-i18n",
