@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.1 — 2026-10-29
 
 - Use a folder-selection start screen and a compact Files/Map workspace on
   phones, with independently scrolling results, single-tap folder navigation,
