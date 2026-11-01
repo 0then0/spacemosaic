@@ -12,7 +12,8 @@ Choose a folder, inspect its directory tree, and compare large files using an
 interactive space map. Files stay on your computer; the application never
 reads their contents to calculate sizes.
 
-**Release status:** 0.1.2. Desktop and mobile share the Rust scan model,
+**Release status:** source version 0.2.0 (the downloads below are the published
+v0.1.2 builds). Desktop and mobile share the Rust scan model,
 recursive aggregation, treemap, and exports. Android and iOS use native storage
 providers and offer a native result browser alongside the canvas. Mobile
 runtime has been user-tested on Pixel 8 with Android 17. Full mobile acceptance,
@@ -44,6 +45,31 @@ including accessibility and in-place upgrades, remains separate from build check
   zero and unknown sizes remain available in the list.
 - Copy a path, reveal an object in the system file manager, or export a
   versioned JSON result and CSV file-type summary through a system save dialog.
+
+## Saved results and changes
+
+Export a result as JSON, close the application, and later choose **Open saved
+result…** (or drop the file on the window, or pass it on the command line). The
+folder is not read again: the saved tree, sizes, unknown values, errors and
+partial-scan flags are shown under a **Saved result** banner with the capture
+date. Paths and URIs in the file are display text only; no action ever opens,
+reveals or rescans them. Schema 1 exports from earlier releases open too.
+
+To see what grew, scan the same folder normally, then choose **Compare with
+current scan**. The baseline is the saved result and the current result is the
+new scan; **Swap direction** reverses them. The interface checks that both
+describe the same area, asks you to confirm when the older format cannot prove
+it, and refuses clearly different areas. Rows are labelled *Added*, *Missing
+now*, *Grew*, *Shrank*, *Same size*, *Type changed* or *Change unknown* and can
+be searched, filtered, sorted by largest growth or decrease, and opened in the
+result they came from. Totals show additions, removals and changes of existing
+objects separately; an incomplete comparison shows a *confirmed* change and the
+number of undetermined objects, not a total.
+
+A comparison matches recorded sizes by exact name. It does not prove deletion or
+freed space, equal sizes do not prove unchanged contents, and renames or moves
+appear as one missing and one added object. See [comparison](docs/comparison.md)
+and the [result format](docs/format.md).
 
 Open **Settings** to choose a language, text size, or **System**, **Light**,
 and **Dark** appearance. The system option follows OS appearance changes; explicit choices override it. The visual
@@ -86,7 +112,10 @@ Desktop scans are limited to 500,000 objects and an estimated 256 MiB metadata
 budget; mobile scans use 100,000 objects and 64 MiB. Reaching either limit leaves
 an explicit partial result. These budgets guard stored node data, not total
 process memory. Provider cursors, filtering, font atlases, and the UI require
-additional memory. JSON exports stream to a temporary file before saving.
+additional memory. JSON exports stream to a temporary file before saving. Opening a
+saved result applies the same object and metadata budgets (desktop 500,000 objects and
+256 MiB, mobile 100,000 and 64 MiB) to each result; a comparison holds two results and
+its difference rows at once.
 
 ## Download
 
@@ -291,6 +320,8 @@ SpaceMosaic does not request file-content downloads.
 ## Project documentation
 
 - [Architecture and dependency policy](docs/architecture.md)
+- [Result format and import](docs/format.md)
+- [Comparing results](docs/comparison.md)
 - [Testing and platform verification](docs/testing.md)
 - [Performance measurement](docs/performance.md)
 - [Contributing](CONTRIBUTING.md)

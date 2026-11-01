@@ -1,8 +1,11 @@
 //! Storage metadata, background scanning, and treemap geometry for SpaceMosaic.
 pub mod bridge;
+pub mod compare;
 #[cfg(feature = "gui")]
 mod fonts;
 pub mod i18n;
+pub mod import;
+pub mod job;
 pub mod mobile;
 #[cfg(feature = "gui")]
 mod preferences;

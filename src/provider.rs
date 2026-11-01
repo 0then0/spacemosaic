@@ -115,6 +115,7 @@ impl Storage for Provider {
             complete: false,
             hard_link: false,
             error: None,
+            listing_complete: None,
             path: None,
         }
     }
@@ -152,6 +153,7 @@ impl Storage for Provider {
                     complete: entry.kind != Kind::Directory && entry.error.is_none(),
                     hard_link: entry.hard_link,
                     error: entry.error,
+                    listing_complete: None,
                     path: None,
                 });
             }

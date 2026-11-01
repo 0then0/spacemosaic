@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.2.0 — 2026-11-01
+
+### Added
+
+- Open a saved JSON result with the system file dialog on desktop, Android and
+  iOS (or drop a `.json` file on the desktop window, or pass it on the command
+  line). It opens without scanning or reading the original folder, is marked
+  "Saved result" with its capture date, and keeps unknown sizes, errors and
+  partial-scan flags. Locations inside the file are never opened, revealed or
+  rescanned.
+- Compare a saved baseline with a scan from the same session: explicit direction
+  with Swap, statuses (added, missing now, grew, shrank, same size, type
+  changed, change unknown) with text labels, search, status filters, sorting by
+  largest growth or decrease, a list and a folder tree, and a jump to the object
+  in the baseline or current result. Totals separate additions, removals and
+  changes of existing objects, never count a folder together with its contents,
+  and report a confirmed (not total) change whenever part is unknown.
+- Absence counts as evidence only where the other result listed the parent
+  directory completely; unreadable folders, incomplete scans, unknown sizes,
+  overflow and ambiguous names stay "change unknown". No rename or move detection.
+- Same-area check: matching, insufficient (person may confirm; labelled as not
+  technically verified) and incompatible (never compared).
+- Bounded, validating import (size, object count, memory, structure, aggregates,
+  versions) that runs in the background and can be cancelled.
+- Mobile native browser: Open saved result, a Changes mode, and no
+  "show in file manager" for saved results.
+
+### Changed
+
+- Exports are written as **schema 2**: `scope_identity`, per-directory
+  `listing_complete` and `app_version`. Schema 1 files remain readable and are
+  never treated as more precise than they were. See `docs/format.md` and
+  `docs/comparison.md`.
+- Version 0.2.0; Android versionCode 8; iOS build 7. Android signing and
+  update rules are unchanged.
+
+
 ## v0.1.2 — 2026-10-29
 
 - Keep phone screens inside system safe areas and increase secondary text size.

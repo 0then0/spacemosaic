@@ -10,8 +10,12 @@ use crate::{
     treemap,
 };
 mod phone;
+mod saved;
+#[cfg(test)]
+use crate::compare::Dimension;
 use eframe::egui::{self, RichText};
 use phone::{PhoneOverlay, PhoneView};
+use saved::{Changes, SavedResult, View};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::path::Path;
 use std::{
@@ -63,7 +67,18 @@ pub struct ExplorerApp {
     appearance: Appearance,
     service: scan::Service,
     job: Option<scan::Job>,
+    /// The result on screen: the latest scan or the opened saved result.
     result: Option<Arc<ScanResult>>,
+    /// Result of the latest scan started in this session.
+    live: Option<Arc<ScanResult>>,
+    view: View,
+    saved: Option<SavedResult>,
+    open_job: Option<crate::job::OpenJob>,
+    open_name: String,
+    open_error: Option<crate::import::ImportError>,
+    changes: Changes,
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    native_open: Option<mpsc::Receiver<crate::mobile::OpenOutcome>>,
     scope: Option<PathBuf>,
     provider_scope: Option<(u64, String)>,
     directory: usize,
@@ -167,6 +182,15 @@ impl ExplorerApp {
             service: scan::Service::default(),
             job: None,
             result: None,
+            live: None,
+            view: View::Live,
+            saved: None,
+            open_job: None,
+            open_name: String::new(),
+            open_error: None,
+            changes: Changes::default(),
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            native_open: None,
             scope: None,
             provider_scope: None,
             directory: 0,
@@ -232,6 +256,9 @@ impl ExplorerApp {
             },
         ));
         self.scope = Some(path);
+        self.view = View::Live;
+        self.live = None;
+        self.changes.clear();
         self.result = None;
         self.selected = None;
         self.directory = 0;
@@ -265,6 +292,9 @@ impl ExplorerApp {
         self.job = Some(job);
         self.provider_scope = Some((generation, root));
         self.scope = None;
+        self.view = View::Live;
+        self.live = None;
+        self.changes.clear();
         self.result = None;
         self.selected = None;
         self.directory = 0;
@@ -278,6 +308,10 @@ impl ExplorerApp {
         self.notice = None;
         self.map_group = None;
         self.dirty = true;
+    }
+    /// Open an exported JSON result for viewing; the folder it describes is not read.
+    pub fn open_result(&mut self, path: PathBuf) {
+        self.open_saved(path, false);
     }
     fn rescan(&mut self) {
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -299,6 +333,9 @@ impl ExplorerApp {
         {
             let generation = bridge::begin();
             self.job = None;
+            self.view = View::Live;
+            self.live = None;
+            self.changes.clear();
             self.result = None;
             self.provider_scope = None;
             self.preview = None;
@@ -495,7 +532,11 @@ impl ExplorerApp {
                 .is_some_and(|(generation, _)| !bridge::is_current(*generation))
             {
                 self.job = None;
-                self.result = None;
+                if self.view == View::Live {
+                    self.result = None;
+                }
+                self.live = None;
+                self.changes.clear();
                 self.provider_scope = None;
             }
             if let Some(command) = crate::mobile::take_command() {
@@ -520,6 +561,11 @@ impl ExplorerApp {
                         self.phone_back();
                     }
                     Command::CloseSettings => self.settings_open = false,
+                    Command::OpenSaved => {
+                        if self.open_job.is_none() {
+                            self.open_saved_dialog();
+                        }
+                    }
                     Command::Allocated(allocated) => {
                         self.allocated = allocated
                             && self.result.as_ref().is_some_and(|r| {
@@ -557,21 +603,19 @@ impl ExplorerApp {
             }
         }
         if let Some(result) = self.job.as_ref().and_then(scan::Job::take) {
-            self.extensions = result.extensions();
-            self.sort_extensions();
             let result = Arc::new(result);
-            #[cfg(any(target_os = "android", target_os = "ios"))]
-            if let Some((generation, _)) = &self.provider_scope {
-                crate::mobile::publish(*generation, result.clone());
-            }
-            if result.nodes[0].allocated.known == 0 && result.nodes[0].allocated.unknown > 0 {
-                self.allocated = false;
-            }
-            self.result = Some(result);
-            self.phone_home = false;
+            self.live = Some(result.clone());
             self.job = None;
-            self.dirty = true;
+            if self.view == View::Live {
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                if let Some((generation, _)) = &self.provider_scope {
+                    crate::mobile::publish(*generation, result.clone());
+                }
+                self.set_displayed(Some(result));
+                self.phone_home = false;
+            }
         }
+        self.poll_saved();
         if let Some(listing) = bridge::take() {
             self.mobile_busy = false;
             #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -604,7 +648,12 @@ impl ExplorerApp {
             });
             self.export = None;
         }
-        if self.job.is_some() || self.mobile_busy || self.export.is_some() {
+        if self.job.is_some()
+            || self.mobile_busy
+            || self.export.is_some()
+            || self.open_job.is_some()
+            || self.changes.job.is_some()
+        {
             context.request_repaint_after(Duration::from_millis(100));
         }
     }
@@ -780,7 +829,17 @@ impl ExplorerApp {
                             self.notice = Some("cancelled");
                         }
                     }
-                    if self.result.is_some() {
+                    if ui
+                        .add_enabled(
+                            self.open_job.is_none(),
+                            egui::Button::new(t("open_saved"))
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                        )
+                        .clicked()
+                    {
+                        self.open_saved_dialog();
+                    }
+                    if self.result.is_some() && self.view != View::Changes {
                         if ui.max_rect().width() < 500.0 {
                             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                             ui.menu_button(t("export"), |ui| {
@@ -813,9 +872,12 @@ impl ExplorerApp {
                         }
                     }
                 });
+                self.view_tabs(ui);
             });
     }
     fn summary(&mut self, ui: &mut egui::Ui) {
+        self.open_status(ui);
+        self.saved_banner(ui);
         let language = self.language;
         let t = |key| i18n::text(language, key);
         if let Some(job) = &self.job {
@@ -832,7 +894,8 @@ impl ExplorerApp {
                 ui.label(i18n::counted(language, progress.errors, "error"));
             });
         }
-        if let Some(result) = &self.result {
+        // The comparison screen has its own summary; the last browsed result is not it.
+        if let Some(result) = self.result.as_ref().filter(|_| self.view != View::Changes) {
             ui.label(
                 RichText::new(t("scope"))
                     .small()
@@ -1421,7 +1484,7 @@ impl ExplorerApp {
                         self.navigate(index);
                     }
                     #[cfg(any(target_os = "android", target_os = "ios"))]
-                    if ui.button(t("reveal")).clicked() {
+                    if self.view == View::Live && ui.button(t("reveal")).clicked() {
                         let _ = crate::mobile::request(
                             serde_json::json!({"op":"view", "locator":node.locator}),
                         );
@@ -1725,6 +1788,11 @@ impl ExplorerApp {
         }) {
             if path.is_dir() {
                 self.start(path);
+            } else if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+            {
+                self.open_saved(path, false);
             }
         }
         if ui
@@ -1776,7 +1844,9 @@ impl ExplorerApp {
                                 ui.add_space(12.0);
                             }
                             self.summary(ui);
-                            if self.result.is_some() {
+                            if self.view == View::Changes {
+                                self.changes_workspace(ui, desktop);
+                            } else if self.result.is_some() {
                                 ui.add_space(12.0);
                                 self.navigation(ui);
                                 self.refresh_rows();
@@ -1800,6 +1870,8 @@ impl ExplorerApp {
                                         "empty_body"
                                     },
                                 ));
+                                ui.add_space(14.0);
+                                ui.label(t("empty_saved_hint"));
                                 ui.add_space(14.0);
                                 ui.label(RichText::new(t("privacy_note")).weak());
                             }
@@ -2117,6 +2189,7 @@ mod tests {
             complete: true,
             hard_link: false,
             error: None,
+            listing_complete: None,
             path: None,
         })
         .collect();
@@ -2130,6 +2203,8 @@ mod tests {
             limit_reason: None,
             cross_filesystems: false,
             errors: 0,
+            scope_identity: None,
+            app_version: None,
             nodes,
         }));
         app.language = 0;
@@ -3017,6 +3092,7 @@ mod tests {
                             complete: true,
                             hard_link: false,
                             error: None,
+                            listing_complete: None,
                             path: None,
                         });
                     }
@@ -3124,6 +3200,7 @@ mod tests {
                 complete: true,
                 hard_link: false,
                 error: None,
+                listing_complete: None,
                 path: None,
             })
             .collect();
@@ -3137,6 +3214,8 @@ mod tests {
             limit_reason: None,
             cross_filesystems: false,
             errors: 0,
+            scope_identity: None,
+            app_version: None,
             nodes,
         }));
         app.selected = Some(25000);
@@ -3398,5 +3477,489 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ----- Saved results and comparison -----
+
+    fn rendered_texts(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+    /// A copy of a result after some objects changed, with aggregates recomputed.
+    fn variant(result: &ScanResult, edit: impl FnOnce(&mut Vec<scan::Node>)) -> ScanResult {
+        let mut next = result.clone();
+        for node in &mut next.nodes {
+            if node.kind == Kind::Directory {
+                node.logical = scan::Measure::default();
+                node.allocated = scan::Measure::default();
+            }
+        }
+        edit(&mut next.nodes);
+        scan::aggregate(&mut next.nodes);
+        next
+    }
+    fn app_with_saved_and_live() -> ExplorerApp {
+        let mut app = fixture();
+        let live = app.result.clone().unwrap();
+        // Baseline: image.jpg was smaller, notes.txt did not exist, extra.bin was present.
+        let saved = variant(&live, |nodes| {
+            nodes[3].logical.known = 60;
+            nodes[3].allocated.known = 60;
+            nodes.truncate(5);
+            nodes[4].logical.known = 20;
+            let mut extra = nodes[4].clone();
+            extra.name = "extra.bin".into();
+            extra.locator = "extra.bin".into();
+            extra.native_locator = "extra.bin".into();
+            extra.logical.known = 400;
+            extra.parent = Some(0);
+            nodes.push(extra);
+        });
+        app.live = Some(live);
+        app.saved = Some(SavedResult {
+            result: Arc::new(saved),
+            name: "photos-2026-09.json".into(),
+        });
+        app
+    }
+    fn settle(
+        app: &mut ExplorerApp,
+        context: &egui::Context,
+        size: egui::Vec2,
+    ) -> egui::FullOutput {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let output = frame_at(app, context, vec![], size);
+            if app.changes.job.is_none() && app.open_job.is_none() {
+                return frame_at(app, context, vec![], size).tap(output);
+            }
+            assert!(Instant::now() < deadline, "background job did not finish");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    trait Tap {
+        fn tap(self, _: egui::FullOutput) -> Self;
+    }
+    impl Tap for egui::FullOutput {
+        fn tap(self, _: egui::FullOutput) -> Self {
+            self
+        }
+    }
+    fn compare_in_app(app: &mut ExplorerApp, context: &egui::Context, size: egui::Vec2) {
+        app.open_changes();
+        app.changes.confirm_scope = true;
+        app.start_compare();
+        settle(app, context, size);
+        assert!(
+            app.changes.comparison.is_some(),
+            "comparison did not finish"
+        );
+    }
+
+    #[test]
+    fn saved_results_are_marked_distinctly_and_expose_no_actions_on_recorded_locations() {
+        for language in 0..i18n::TAGS.len() {
+            for (size, label) in [
+                (egui::vec2(1180.0, 900.0), "desktop"),
+                (egui::vec2(360.0, 800.0), "phone"),
+            ] {
+                let context = egui::Context::default();
+                theme::install(&context);
+                context.set_fonts(crate::fonts::definitions());
+                let mut app = app_with_saved_and_live();
+                app.language = language;
+                app.show(View::Saved);
+                for _ in 0..3 {
+                    frame_at(&mut app, &context, vec![], size);
+                }
+                let output = frame_at(&mut app, &context, vec![], size);
+                let texts = rendered_texts(&output);
+                let banner = i18n::text(language, "saved_banner");
+                assert!(
+                    texts.iter().any(|t| t.starts_with(banner)),
+                    "banner missing: {language}, {label}"
+                );
+                assert!(
+                    app.scope.is_none() && app.provider_scope.is_none(),
+                    "nothing to rescan"
+                );
+                assert!(
+                    app.result
+                        .as_ref()
+                        .unwrap()
+                        .nodes
+                        .iter()
+                        .all(|n| n.path.is_none())
+                );
+                assert!(app.job.is_none(), "viewing a saved result starts no scan");
+                assert!(
+                    texts
+                        .iter()
+                        .all(|t| !t.starts_with("saved_") && !t.starts_with("cmp_"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn comparison_renders_labelled_statuses_in_all_languages_themes_sizes_and_text_scales() {
+        for language in 0..i18n::TAGS.len() {
+            for appearance in [Appearance::Light, Appearance::Dark] {
+                for (size, zoom) in [
+                    (egui::vec2(1180.0, 900.0), 1.0),
+                    (egui::vec2(360.0, 800.0), 1.0),
+                    (egui::vec2(360.0, 800.0), 1.6),
+                ] {
+                    let context = egui::Context::default();
+                    theme::install(&context);
+                    context.set_fonts(crate::fonts::definitions());
+                    context.set_theme(appearance.preference());
+                    context.set_zoom_factor(zoom);
+                    let mut app = app_with_saved_and_live();
+                    app.language = language;
+                    compare_in_app(&mut app, &context, size);
+                    let output = frame_at(&mut app, &context, vec![], size);
+                    let texts = rendered_texts(&output).join("\n");
+                    let t = |key| i18n::text(language, key);
+                    // The grew row and the missing row carry text labels, not only colors.
+                    assert!(texts.contains(t("cmp_grew")), "{language} {size:?} {zoom}");
+                    assert!(
+                        texts.contains(t("cmp_removed")),
+                        "{language} {size:?} {zoom}"
+                    );
+                    assert!(texts.contains("image.jpg") && texts.contains("extra.bin"));
+                    assert!(
+                        texts.contains(&i18n::signed_bytes(language, 40))
+                            || texts.contains(&i18n::signed_bytes(language, -400)),
+                    );
+                    let screen = context.content_rect();
+                    for shape in &output.shapes {
+                        if let egui::Shape::Text(text) = &shape.shape
+                            && shape
+                                .clip_rect
+                                .intersects(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                        {
+                            assert!(text.pos.x < screen.right() + 1.0, "text outside the screen");
+                        }
+                    }
+                    for line in rendered_texts(&output) {
+                        assert!(
+                            !(line.starts_with("cmp_")
+                                || line.starts_with("compare_")
+                                || line.starts_with("saved_")),
+                            "untranslated key shown: {line}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_comparison_screen_does_not_show_the_summary_of_a_previously_browsed_result() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let size = egui::vec2(1180.0, 900.0);
+        let mut app = app_with_saved_and_live();
+        app.show(View::Saved);
+        assert!(app.shows_saved_result());
+        compare_in_app(&mut app, &context, size);
+        let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size));
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t == i18n::text(0, "size_caveat") || t == i18n::text(0, "scope"))
+        );
+        // Native actions must still treat the browsed result as a file while Changes is on top.
+        assert_eq!(app.view, View::Changes);
+        assert!(app.shows_saved_result());
+        app.show(View::Live);
+        assert!(!app.shows_saved_result());
+    }
+
+    #[test]
+    fn comparison_summary_separates_confirmed_changes_from_the_unknown_part() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = app_with_saved_and_live();
+        // A file whose size is unknown now: the total must not be presented as complete.
+        Arc::make_mut(app.live.as_mut().unwrap()).nodes[4].logical = scan::Measure {
+            unknown: 1,
+            ..Default::default()
+        };
+        scan::aggregate(&mut Arc::make_mut(app.live.as_mut().unwrap()).nodes);
+        let size = egui::vec2(1180.0, 900.0);
+        compare_in_app(&mut app, &context, size);
+        let comparison = app.changes.comparison.clone().unwrap();
+        let totals = comparison.totals(Dimension::Logical);
+        assert!(!totals.is_complete());
+        let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size)).join("\n");
+        assert!(texts.contains(i18n::text(0, "cmp_tile_net_partial")));
+        assert!(texts.contains(i18n::text(0, "cmp_net_partial")));
+        assert!(!texts.contains(i18n::text(0, "cmp_net_complete")));
+    }
+
+    #[test]
+    fn insufficient_scope_requires_explicit_confirmation_and_swapping_reverses_the_direction() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let size = egui::vec2(1180.0, 900.0);
+        let mut app = app_with_saved_and_live();
+        app.open_changes();
+        let output = frame_at(&mut app, &context, vec![], size);
+        let texts = rendered_texts(&output);
+        assert!(
+            texts
+                .iter()
+                .any(|t| t == i18n::text(0, "cmp_verdict_insufficient"))
+        );
+        assert!(texts.iter().any(|t| t == i18n::text(0, "compare_baseline")));
+        // Without confirmation the job reports that confirmation is needed.
+        app.start_compare();
+        settle(&mut app, &context, size);
+        assert!(app.changes.comparison.is_none());
+        assert!(app.changes.failure.is_some());
+        app.changes.confirm_scope = true;
+        app.start_compare();
+        settle(&mut app, &context, size);
+        let forward = app
+            .changes
+            .comparison
+            .clone()
+            .unwrap()
+            .totals(Dimension::Logical)
+            .net();
+        app.swap_direction();
+        assert!(app.changes.comparison.is_none() && !app.changes.confirm_scope);
+        app.changes.confirm_scope = true;
+        app.start_compare();
+        settle(&mut app, &context, size);
+        assert_eq!(
+            app.changes
+                .comparison
+                .clone()
+                .unwrap()
+                .totals(Dimension::Logical)
+                .net(),
+            -forward
+        );
+    }
+
+    #[test]
+    fn opening_saved_files_in_sequence_keeps_only_the_latest_and_bad_files_do_not_replace_it() {
+        let files = preferences::tests::Fixture::new();
+        let base = files.path().with_extension("saved");
+        std::fs::create_dir_all(&base).unwrap();
+        let live = fixture().result.clone().unwrap();
+        let write = |name: &str, bytes: u64| {
+            let result = variant(&live, |nodes| nodes[3].logical.known = bytes);
+            let path = base.join(name);
+            std::fs::write(&path, serde_json::to_vec(&result).unwrap()).unwrap();
+            path
+        };
+        let (first, second) = (write("first.json", 11), write("second.json", 22));
+        let bad = base.join("bad.json");
+        std::fs::write(&bad, b"{\"schema_version\":2,\"nodes\":[").unwrap();
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let size = egui::vec2(1180.0, 900.0);
+        let mut app = ExplorerApp::empty();
+        app.language = 0;
+        app.open_saved(first, false);
+        app.open_saved(second, false);
+        settle(&mut app, &context, size);
+        assert_eq!(app.saved.as_ref().unwrap().name, "second.json");
+        assert_eq!(
+            app.saved.as_ref().unwrap().result.nodes[3].logical.known,
+            22
+        );
+        assert_eq!(app.view, View::Saved);
+        // A damaged file reports a clear error and leaves the open result untouched.
+        app.open_saved(bad, false);
+        settle(&mut app, &context, size);
+        assert!(app.open_error.is_some());
+        assert_eq!(app.saved.as_ref().unwrap().name, "second.json");
+        let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size));
+        assert!(
+            texts
+                .iter()
+                .any(|t| t == i18n::text(0, "import_error_malformed"))
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn phone_back_leaves_comparison_then_saved_result_without_losing_either() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let size = egui::vec2(360.0, 800.0);
+        let mut app = app_with_saved_and_live();
+        app.show(View::Saved);
+        compare_in_app(&mut app, &context, size);
+        app.changes.selected = Some(1);
+        app.phone_overlay = Some(PhoneOverlay::ChangeDetails);
+        assert!(app.phone_back(), "details sheet closes first");
+        assert_eq!(app.view, View::Changes);
+        assert!(app.phone_back());
+        assert_eq!(app.view, View::Live);
+        assert!(app.saved.is_some() && app.live.is_some());
+        assert!(
+            app.changes.comparison.is_some(),
+            "the comparison can be reopened"
+        );
+    }
+
+    #[test]
+    fn showing_an_object_from_a_change_navigates_the_matching_result() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let size = egui::vec2(1180.0, 900.0);
+        let mut app = app_with_saved_and_live();
+        compare_in_app(&mut app, &context, size);
+        let comparison = app.changes.comparison.clone().unwrap();
+        let removed = (0..comparison.nodes.len())
+            .find(|&i| comparison.name(i) == "extra.bin")
+            .unwrap();
+        let old = comparison.nodes[removed].old.unwrap();
+        app.goto(saved::Side::Baseline, old);
+        assert_eq!(app.view, View::Saved);
+        assert_eq!(app.selected, Some(old as usize));
+        assert!(Arc::ptr_eq(
+            app.result.as_ref().unwrap(),
+            &comparison.baseline
+        ));
+        let grew = (0..comparison.nodes.len())
+            .find(|&i| comparison.name(i) == "image.jpg")
+            .unwrap();
+        app.goto(saved::Side::Current, comparison.nodes[grew].new.unwrap());
+        assert_eq!(app.view, View::Live);
+        assert_eq!(app.directory, 2, "the containing folder is opened");
+        assert_eq!(app.selected, Some(3));
+    }
+
+    #[test]
+    fn a_new_scan_discards_the_comparison_but_keeps_the_saved_baseline() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let mut app = app_with_saved_and_live();
+        compare_in_app(&mut app, &context, egui::vec2(1180.0, 900.0));
+        let folder = preferences::tests::Fixture::new()
+            .path()
+            .with_extension("scan");
+        std::fs::create_dir_all(&folder).unwrap();
+        app.start(folder.clone());
+        assert!(app.changes.comparison.is_none() && app.live.is_none());
+        assert!(app.saved.is_some(), "the baseline survives a new scan");
+        assert_eq!(app.view, View::Live);
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn a_large_comparison_virtualizes_rows_and_stays_interactive() {
+        // 120,000 objects per result; most are unchanged, about a sixth differ.
+        let mut nodes = vec![scan::Node {
+            parent: None,
+            name: "data".into(),
+            locator: "/data".into(),
+            native_locator: "/data".into(),
+            kind: Kind::Directory,
+            logical: scan::Measure::default(),
+            allocated: scan::Measure::default(),
+            complete: true,
+            hard_link: false,
+            error: None,
+            listing_complete: None,
+            path: None,
+        }];
+        for i in 1..120_000_usize {
+            let mut node = nodes[0].clone();
+            node.parent = Some(if i % 50 == 0 { 0 } else { (i / 50) * 50 }.min(i - 1));
+            node.kind = if i % 50 == 0 {
+                Kind::Directory
+            } else {
+                Kind::File
+            };
+            node.name = format!("n{i}");
+            node.locator = format!("/data/n{i}");
+            node.native_locator = node.locator.clone();
+            node.logical.known = (i as u64 * 7919) % 100_000;
+            nodes.push(node);
+        }
+        scan::aggregate(&mut nodes);
+        let old = ScanResult {
+            schema_version: 1,
+            started_unix_seconds: 1_790_000_000,
+            elapsed_millis: 1,
+            scope: "/data".into(),
+            cancelled: false,
+            limited: false,
+            limit_reason: None,
+            cross_filesystems: false,
+            errors: 0,
+            scope_identity: None,
+            app_version: None,
+            nodes: nodes.clone(),
+        };
+        let new = variant(&old, |nodes| {
+            for (i, node) in nodes.iter_mut().enumerate() {
+                if node.kind == Kind::File && i % 6 == 0 {
+                    node.logical.known += 1 + (i as u64 % 977);
+                }
+            }
+        });
+        let mut app = ExplorerApp::empty();
+        app.language = 0;
+        app.phone_home = false;
+        app.live = Some(Arc::new(new));
+        app.saved = Some(SavedResult {
+            result: Arc::new(old),
+            name: "big.json".into(),
+        });
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        let size = egui::vec2(1180.0, 900.0);
+        let started = Instant::now();
+        compare_in_app(&mut app, &context, size);
+        let compare_time = started.elapsed();
+        let comparison = app.changes.comparison.clone().unwrap();
+        assert!(comparison.totals(Dimension::Logical).grew_count > 15_000);
+        let started = Instant::now();
+        let output = frame_at(&mut app, &context, vec![], size);
+        let frame_time = started.elapsed();
+        assert!(app.changes.rows.len() > 15_000);
+        assert!(
+            output.shapes.len() < 2_000,
+            "only the visible rows are painted: {}",
+            output.shapes.len()
+        );
+        // Switching to the folder tree and filtering also stay bounded.
+        app.changes.mode = saved::ChangeMode::Tree;
+        app.changes.query = "n1".into();
+        app.changes.dirty = true;
+        let started = Instant::now();
+        frame_at(&mut app, &context, vec![], size);
+        eprintln!(
+            "large comparison fixture: {} objects per result, {} diff rows, {} events; compare {:?}, first frame {:?}, tree+filter frame {:?} (debug build)",
+            comparison.baseline.nodes.len(),
+            comparison.nodes.len(),
+            app.changes.rows.len(),
+            compare_time,
+            frame_time,
+            started.elapsed()
+        );
     }
 }

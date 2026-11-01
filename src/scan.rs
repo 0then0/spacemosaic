@@ -13,6 +13,8 @@ use std::{
 };
 
 pub const DEFAULT_NODE_LIMIT: usize = 500_000;
+/// Version written by this release. Schema 1 files remain readable; see `import`.
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Measure {
@@ -33,7 +35,11 @@ impl Measure {
             },
         }
     }
-    fn add(&mut self, other: Self) {
+    /// Every contributing size was measured and none overflowed.
+    pub fn determined(&self) -> bool {
+        self.unknown == 0 && !self.overflow
+    }
+    pub(crate) fn add(&mut self, other: Self) {
         match self.known.checked_add(other.known) {
             Some(n) => self.known = n,
             None => self.overflow = true,
@@ -65,6 +71,11 @@ pub struct Node {
     pub complete: bool,
     pub hard_link: bool,
     pub error: Option<String>,
+    /// Schema 2: for a directory, whether its direct children were enumerated to the
+    /// end. Unlike `complete` this ignores incomplete descendants. Absent for
+    /// non-directories and schema 1 data, where it was never recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listing_complete: Option<bool>,
     #[serde(skip)]
     pub path: Option<PathBuf>,
 }
@@ -74,6 +85,31 @@ pub struct Node {
 pub enum LimitReason {
     NodeLimit,
     MemoryLimit,
+}
+
+/// Kind of storage access that produced a result.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    Filesystem,
+    AndroidSaf,
+    IosFiles,
+    Provider,
+}
+
+/// Schema 2 facts that identify the scanned area. They support compatibility
+/// checks only; none of them proves that two scans share a volume or device.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ScopeIdentity {
+    pub source: SourceKind,
+    /// `std::env::consts::OS` of the process that scanned.
+    pub platform: String,
+    /// Exact native locator of the scope root.
+    pub root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_inode: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_created_unix_nanos: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -88,6 +124,11 @@ pub struct ScanResult {
     pub limit_reason: Option<LimitReason>,
     pub cross_filesystems: bool,
     pub errors: u64,
+    /// Schema 2 only; `None` means the scan predates identity recording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_identity: Option<ScopeIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
     pub nodes: Vec<Node>,
 }
 
@@ -156,6 +197,7 @@ fn node(path: PathBuf, parent: Option<usize>) -> Node {
         complete: false,
         hard_link: false,
         error: None,
+        listing_complete: None,
         path: Some(path),
     }
 }
@@ -212,6 +254,7 @@ fn classify(node: &mut Node, metadata: &fs::Metadata) {
         node.allocated = Measure::value(None);
     } else if metadata.is_dir() {
         node.kind = Kind::Directory;
+        node.listing_complete = Some(false);
     } else if metadata.is_file() {
         node.kind = Kind::File;
         node.logical = Measure::value(Some(metadata.len()));
@@ -226,6 +269,9 @@ fn classify(node: &mut Node, metadata: &fs::Metadata) {
 fn fail(node: &mut Node, error: String) {
     node.error = Some(error);
     node.complete = false;
+    if node.listing_complete.is_some() {
+        node.listing_complete = Some(false);
+    }
     node.logical.unknown = node.logical.unknown.saturating_add(1);
     node.allocated.unknown = node.allocated.unknown.saturating_add(1);
 }
@@ -236,6 +282,43 @@ fn io_code(error: &std::io::Error) -> String {
         _ => "metadata_unavailable",
     }
     .into()
+}
+
+fn filesystem_identity(root: &str, metadata: Option<&fs::Metadata>) -> ScopeIdentity {
+    #[cfg(unix)]
+    let inode = metadata.map(|m| {
+        use std::os::unix::fs::MetadataExt;
+        m.ino()
+    });
+    #[cfg(not(unix))]
+    let inode = None;
+    let created = metadata
+        .and_then(|m| m.created().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .and_then(|d| u64::try_from(d.as_nanos()).ok());
+    ScopeIdentity {
+        source: SourceKind::Filesystem,
+        platform: std::env::consts::OS.into(),
+        root: root.into(),
+        root_inode: inode,
+        root_created_unix_nanos: created,
+    }
+}
+
+fn provider_identity(root: &str) -> ScopeIdentity {
+    ScopeIdentity {
+        source: if root.starts_with("content://") {
+            SourceKind::AndroidSaf
+        } else if root.starts_with("file://") {
+            SourceKind::IosFiles
+        } else {
+            SourceKind::Provider
+        },
+        platform: std::env::consts::OS.into(),
+        root: root.into(),
+        root_inode: None,
+        root_created_unix_nanos: None,
+    }
 }
 
 pub fn scan(
@@ -252,7 +335,7 @@ pub fn scan(
     let path = absolute.as_path();
     let started = Instant::now();
     let mut result = ScanResult {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         started_unix_seconds: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -264,10 +347,16 @@ pub fn scan(
         limit_reason: None,
         cross_filesystems: options.cross_filesystems,
         errors: 0,
+        scope_identity: None,
+        app_version: Some(env!("CARGO_PKG_VERSION").into()),
         nodes: vec![node(path.to_owned(), None)],
     };
     let root_metadata = fs::symlink_metadata(path);
     let root_device = root_metadata.as_ref().ok().and_then(device);
+    result.scope_identity = Some(filesystem_identity(
+        &result.nodes[0].native_locator,
+        root_metadata.as_ref().ok(),
+    ));
     let mut stack = Vec::new();
     match root_metadata {
         Ok(metadata) => {
@@ -305,16 +394,19 @@ pub fn scan(
             }
         };
         result.nodes[parent].complete = true;
+        result.nodes[parent].listing_complete = Some(true);
         for entry in entries {
             if cancel.load(Ordering::Relaxed) {
                 result.cancelled = true;
                 result.nodes[parent].complete = false;
+                result.nodes[parent].listing_complete = Some(false);
                 break 'walk;
             }
             if result.nodes.len() >= options.node_limit.max(1) {
                 result.limited = true;
                 result.limit_reason = Some(LimitReason::NodeLimit);
                 result.nodes[parent].complete = false;
+                result.nodes[parent].listing_complete = Some(false);
                 break 'walk;
             }
             let path = match entry {
@@ -351,6 +443,7 @@ pub fn scan(
                 result.limited = true;
                 result.limit_reason = Some(LimitReason::MemoryLimit);
                 result.nodes[parent].complete = false;
+                result.nodes[parent].listing_complete = Some(false);
                 break 'walk;
             }
             known_bytes = known_bytes.saturating_add(child.logical.known);
@@ -373,27 +466,32 @@ pub fn scan(
     result
 }
 
-fn finish(result: &mut ScanResult, started: Instant, progress: &Mutex<Progress>) {
-    // Parent IDs precede descendants, so a reverse pass aggregates without recursion.
-    for index in (0..result.nodes.len()).rev() {
-        if result.nodes[index].kind == Kind::Directory
-            && !result.nodes[index].complete
-            && result.nodes[index].logical.unknown == 0
+/// Aggregate directory measures from leaf measurements. Parent IDs precede
+/// descendants, so a reverse pass needs no recursion.
+pub fn aggregate(nodes: &mut [Node]) {
+    for index in (0..nodes.len()).rev() {
+        if nodes[index].kind == Kind::Directory
+            && !nodes[index].complete
+            && nodes[index].logical.unknown == 0
         {
-            result.nodes[index].logical.unknown += 1;
-            result.nodes[index].allocated.unknown += 1;
+            nodes[index].logical.unknown += 1;
+            nodes[index].allocated.unknown += 1;
         }
-        if let Some(parent) = result.nodes[index].parent {
+        if let Some(parent) = nodes[index].parent {
             let (logical, allocated, complete) = (
-                result.nodes[index].logical,
-                result.nodes[index].allocated,
-                result.nodes[index].complete,
+                nodes[index].logical,
+                nodes[index].allocated,
+                nodes[index].complete,
             );
-            result.nodes[parent].logical.add(logical);
-            result.nodes[parent].allocated.add(allocated);
-            result.nodes[parent].complete &= complete;
+            nodes[parent].logical.add(logical);
+            nodes[parent].allocated.add(allocated);
+            nodes[parent].complete &= complete;
         }
     }
+}
+
+fn finish(result: &mut ScanResult, started: Instant, progress: &Mutex<Progress>) {
+    aggregate(&mut result.nodes);
     result.elapsed_millis = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     *progress.lock().unwrap_or_else(|p| p.into_inner()) = Progress {
         objects: result.nodes.len(),
@@ -553,9 +651,10 @@ pub fn scan_storage(
     let mut root = storage.root();
     root.parent = None;
     root.path = None;
+    root.listing_complete = (root.kind == Kind::Directory).then_some(false);
     let mut seen = HashSet::from([root.locator.clone()]);
     let mut result = ScanResult {
-        schema_version: 1,
+        schema_version: SCHEMA_VERSION,
         started_unix_seconds: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -567,6 +666,8 @@ pub fn scan_storage(
         limit_reason: None,
         cross_filesystems: false,
         errors: 0,
+        scope_identity: Some(provider_identity(&root.native_locator)),
+        app_version: Some(env!("CARGO_PKG_VERSION").into()),
         nodes: vec![root],
     };
     let mut stack = vec![0];
@@ -602,6 +703,7 @@ pub fn scan_storage(
                 Ok(Some(child)) => child,
                 Ok(None) => {
                     result.nodes[parent].complete = true;
+                    result.nodes[parent].listing_complete = Some(true);
                     break;
                 }
                 Err(error) => {
@@ -621,6 +723,7 @@ pub fn scan_storage(
             }
             child.parent = Some(parent);
             child.path = None;
+            child.listing_complete = (child.kind == Kind::Directory).then_some(false);
             if child.kind == Kind::Directory {
                 child.logical = Measure::default();
                 child.allocated = Measure::default();

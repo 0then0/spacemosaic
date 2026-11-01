@@ -30,6 +30,38 @@ These implementation bounds do not establish a frame-time guarantee. Measure
 interactive latency separately while scanning, navigating, and changing filters.
 No cross-product speed claims or unmeasured responsiveness numbers are made.
 
+## Saved results and comparison
+
+`examples/compare_benchmark.rs` builds a synthetic baseline and a later tree
+(about 2% of objects removed, 8% of files grown, 3% added, some folders unreadable
+and a few files replaced by folders), writes both as schema 2 JSON, then measures
+bounded import and comparison:
+
+```sh
+cargo build --release --locked --example compare_benchmark
+./target/release/examples/compare_benchmark 500000 --write DIR
+/usr/bin/time -l ./target/release/examples/compare_benchmark --read DIR
+```
+
+Measured on macOS 15.7.9, Apple Silicon, Rust 1.99.1, release build, warm file cache
+(synthetic fixture, not a cold disk or a real file tree):
+
+| Objects per result | JSON size | Import of both | Compare | Diff rows | Peak RSS (`--read`) |
+| --- | --- | --- | --- | --- | --- |
+| 200,000 | 124 MB + 105 MB | 0.79 s | 64 ms | 171,410 | not measured |
+| 500,000 / 423,665 | 317 MB + 269 MB | 2.05 s | 157 ms | 431,976 | 589 MB |
+
+The 500,000-object case is the desktop limit; the estimated metadata budget of
+each result was close to its 256 MiB cap, so peak memory is roughly two result
+budgets plus 96 bytes per diff row. Mobile budgets (100,000 objects, 64 MiB)
+are four times smaller per result. No mobile device was measured.
+
+UI: a headless egui test with 120,000 objects per result (debug build, software
+layout only, no GPU) compared in 289 ms, painted the first change-list frame in
+1.5 ms with fewer than 2,000 shapes (rows are virtualized), and rebuilt the
+folder tree with a filter in 21 ms. These numbers do not describe real frame
+rates on a display or on a phone.
+
 ## Reference measurement
 
 One local measurement on macOS 15.7.9, Apple Silicon (`aarch64`), Rust 1.99.1:

@@ -12,6 +12,8 @@ pub(super) enum PhoneOverlay {
     Details,
     ScanInfo,
     Filter,
+    ChangeDetails,
+    ChangeFilter,
 }
 
 impl ExplorerApp {
@@ -23,6 +25,8 @@ impl ExplorerApp {
             if overlay == PhoneOverlay::ScanInfo {
                 self.phone_overlay = Some(PhoneOverlay::Actions);
             }
+        } else if self.view == View::Changes && self.open_job.is_none() {
+            self.leave_changes();
         } else if self.phone_home && self.job.is_none() && !self.mobile_busy {
             return false;
         } else if let Some(job) = &self.job {
@@ -53,14 +57,14 @@ impl ExplorerApp {
             self.directory
         }
     }
-    fn phone_button(ui: &mut egui::Ui, label: &str) -> bool {
+    pub(super) fn phone_button(ui: &mut egui::Ui, label: &str) -> bool {
         ui.add_sized(
             [ui.available_width(), 48.0],
             egui::Button::new(label).wrap(),
         )
         .clicked()
     }
-    fn phone_icon(ui: &mut egui::Ui, icon: &str, label: &str) -> bool {
+    pub(super) fn phone_icon(ui: &mut egui::Ui, icon: &str, label: &str) -> bool {
         let response = ui.add_sized([48.0, 48.0], egui::Button::new(icon));
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
         response.on_hover_text(label).clicked()
@@ -79,6 +83,10 @@ impl ExplorerApp {
             self.phone_sheet(ui, overlay);
             return;
         }
+        if self.view == View::Changes {
+            self.phone_changes(ui);
+            return;
+        }
         if self.phone_home && self.job.is_none() && !self.mobile_busy {
             ui.heading("SpaceMosaic");
             self.settings(ui);
@@ -93,6 +101,10 @@ impl ExplorerApp {
                     if Self::phone_button(ui, t("choose")) {
                         self.choose();
                     }
+                    if self.open_job.is_none() && Self::phone_button(ui, t("open_saved")) {
+                        self.open_saved_dialog();
+                    }
+                    self.open_status(ui);
                     if self.result.is_some() && Self::phone_button(ui, t("phone_continue")) {
                         self.phone_home = false;
                     }
@@ -151,6 +163,7 @@ impl ExplorerApp {
                 self.phone_overlay = Some(PhoneOverlay::Actions);
             }
         });
+        self.saved_banner_line(ui);
         let result = self.result.as_ref().unwrap();
         let node = &result.nodes[scope];
         let status = if result.cancelled || result.limited || !result.nodes[0].complete {
@@ -446,6 +459,25 @@ impl ExplorerApp {
                 }
             });
     }
+    /// A compact, always-visible marker that the list is an older snapshot.
+    fn saved_banner_line(&self, ui: &mut egui::Ui) {
+        if let (View::Saved, Some(saved)) = (self.view, &self.saved) {
+            let text = format!(
+                "{} · {}",
+                i18n::text(self.language, "saved_banner"),
+                i18n::timestamp(saved.result.started_unix_seconds)
+            );
+            ui.add(
+                egui::Label::new(
+                    RichText::new(text)
+                        .small()
+                        .strong()
+                        .color(theme::accent(ui.visuals().dark_mode)),
+                )
+                .truncate(),
+            );
+        }
+    }
     fn phone_row_label(ui: &mut egui::Ui, bounds: egui::Rect, text: RichText) {
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -464,6 +496,8 @@ impl ExplorerApp {
             PhoneOverlay::Details => "phone_details",
             PhoneOverlay::ScanInfo => "phone_scan_info",
             PhoneOverlay::Filter => "phone_filter",
+            PhoneOverlay::ChangeDetails => "phone_details",
+            PhoneOverlay::ChangeFilter => "view_changes",
         };
         ui.horizontal(|ui| {
             if Self::phone_icon(ui, "←", t("close")) {
@@ -515,6 +549,53 @@ impl ExplorerApp {
                     if let Some(key) = self.notice {
                         ui.label(t(key));
                     }
+                    ui.separator();
+                    ui.label(t("saved_section"));
+                    if self.open_job.is_none() && Self::phone_button(ui, t("open_saved")) {
+                        self.phone_overlay = None;
+                        self.open_saved_dialog();
+                    }
+                    if self.saved.is_some() {
+                        let live = self.live.is_some();
+                        for (view, key, enabled) in [
+                            (View::Live, "view_current", live),
+                            (View::Saved, "view_saved", true),
+                        ] {
+                            if ui
+                                .add_enabled(
+                                    enabled,
+                                    egui::Button::new(t(key))
+                                        .selected(self.view == view)
+                                        .min_size(egui::vec2(ui.available_width(), 48.0)),
+                                )
+                                .clicked()
+                            {
+                                self.phone_overlay = None;
+                                self.show(view);
+                            }
+                        }
+                        if ui
+                            .add_enabled(
+                                live,
+                                egui::Button::new(t("compare_with_current"))
+                                    .min_size(egui::vec2(ui.available_width(), 48.0)),
+                            )
+                            .clicked()
+                        {
+                            self.open_changes();
+                        }
+                        if !live {
+                            ui.label(RichText::new(t("compare_needs_scan")).small().weak());
+                        }
+                        if Self::phone_button(ui, t("saved_close")) {
+                            self.phone_overlay = None;
+                            self.close_saved();
+                        }
+                    }
+                    self.open_status(ui);
+                }
+                PhoneOverlay::ChangeDetails | PhoneOverlay::ChangeFilter => {
+                    self.phone_change_sheet(ui, overlay)
                 }
                 PhoneOverlay::Details => self.details(ui),
                 PhoneOverlay::ScanInfo => self.summary(ui),

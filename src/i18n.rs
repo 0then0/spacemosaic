@@ -77,6 +77,10 @@ pub fn integer(language: usize, value: u64) -> String {
     output
 }
 pub fn bytes(language: usize, value: u64) -> String {
+    bytes_wide(language, u128::from(value))
+}
+/// Sums of many u64 sizes can exceed u64; only the display is rounded.
+pub fn bytes_wide(language: usize, value: u128) -> String {
     let units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
     let mut number = value as f64;
     let mut unit = 0;
@@ -85,7 +89,7 @@ pub fn bytes(language: usize, value: u64) -> String {
         unit += 1;
     }
     if unit == 0 {
-        format!("{} B", integer(language, value))
+        format!("{} B", integer(language, value as u64))
     } else {
         let mut number = format!("{number:.1}");
         if matches!(TAGS[language.min(6)], "ru" | "es" | "de" | "fr" | "pt-BR") {
@@ -95,9 +99,56 @@ pub fn bytes(language: usize, value: u64) -> String {
     }
 }
 
+/// A change in bytes with an explicit sign, so direction never depends on color.
+pub fn signed_bytes(language: usize, value: i128) -> String {
+    let text = bytes_wide(language, value.unsigned_abs());
+    match value.signum() {
+        1 => format!("+{text}"),
+        -1 => format!("\u{2212}{text}"),
+        _ => text,
+    }
+}
+
+/// UTC date and time of a recorded scan, independent of display language.
+pub fn timestamp(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64;
+    let rest = seconds % 86_400;
+    // Civil-from-days (proleptic Gregorian), after H. Hinnant.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
+        rest / 3600,
+        rest % 3600 / 60
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn timestamps_and_signed_sizes_are_language_independent_and_exact() {
+        assert_eq!(timestamp(0), "1970-01-01 00:00 UTC");
+        assert_eq!(timestamp(1_790_000_000), "2026-09-21 14:13 UTC");
+        assert_eq!(timestamp(951_782_400), "2000-02-29 00:00 UTC");
+        assert_eq!(signed_bytes(0, 0), "0 B");
+        assert_eq!(signed_bytes(0, 50 * 1024 * 1024), "+50.0 MiB");
+        assert_eq!(signed_bytes(3, -(400 * 1024 * 1024)), "\u{2212}400,0 MiB");
+        assert_eq!(signed_bytes(0, -(u64::MAX as i128)), "\u{2212}16.0 EiB");
+        assert!(signed_bytes(0, 2 * u64::MAX as i128).starts_with('+'));
+    }
     #[test]
     fn all_seven_catalogs_have_complete_nonempty_keys() {
         let expected: Vec<_> = catalogs()[0].keys().collect();

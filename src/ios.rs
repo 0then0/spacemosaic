@@ -101,6 +101,25 @@ pub unsafe extern "C" fn spacemosaic_free_result(value: *mut std::ffi::c_char) {
         drop(unsafe { std::ffi::CString::from_raw(value) });
     }
 }
+/// # Safety
+/// `path` is null or a readable NUL-terminated UTF-8 string for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spacemosaic_open_done(
+    id: u64,
+    outcome: i32,
+    path: *const std::ffi::c_char,
+) {
+    let path = if path.is_null() {
+        None
+    } else {
+        // SAFETY: caller guarantees a valid string for the duration of this call.
+        unsafe { std::ffi::CStr::from_ptr(path) }
+            .to_str()
+            .ok()
+            .map(str::to_owned)
+    };
+    crate::mobile::open_complete(id, outcome, path.as_deref());
+}
 #[unsafe(no_mangle)]
 pub extern "C" fn spacemosaic_export_done(id: u64, outcome: i32) {
     crate::mobile::export_complete(id, crate::mobile::ExportOutcome::code(outcome));

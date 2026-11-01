@@ -25,13 +25,14 @@ import java.util.concurrent.Executors;
 /** Native metadata cursors and system dialogs; Rust owns recursive traversal. */
 public final class StorageActivity extends NativeActivity {
     static { System.loadLibrary("spacemosaic"); }
-    private static final int PICK_TREE = 43, SAVE_EXPORT = 44;
+    private static final int PICK_TREE = 43, SAVE_EXPORT = 44, OPEN_SAVED = 45;
     private static final int PAGE_SIZE = 32, MAX_BYTES = 256 * 1024;
     private static native boolean deliver(String json);
     private static native long begin();
     private static native boolean isCurrent(long generation);
     private static native String resultPage(String request);
     private static native void exportDone(long id, int outcome);
+    private static native void openDone(long id, int outcome, String path);
     private static native boolean back();
     private static native void setInsets(int left, int top, int right, int bottom,
         int x, int y, int width, int height, int windowWidth, int windowHeight, int footerTop, boolean systemDark);
@@ -40,7 +41,9 @@ public final class StorageActivity extends NativeActivity {
     private static WeakReference<StorageActivity> current = new WeakReference<>(null);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private long pickerGeneration, exportId;
+    private long pickerGeneration, exportId, openId, openLimit;
+    // True while the browsed result is an opened file: its recorded locations are never actionable.
+    private volatile boolean historical;
     private volatile long cursorGeneration, cursorScan;
     private long cancelledThrough;
     private final Object cursorLock = new Object();
@@ -239,11 +242,13 @@ public final class StorageActivity extends NativeActivity {
         actions.addView(button("choose", () -> pickTree(begin())));
         actions.addView(button("rescan", () -> command("rescan")));
         actions.addView(button("cancel", () -> command("cancel")));
+        actions.addView(button("open_saved", () -> command("open_saved")));
         HorizontalScrollView actionScroll = new HorizontalScrollView(viewContext()); actionScroll.addView(actions); content.addView(actionScroll);
         LinearLayout modes = new LinearLayout(viewContext());
         for (String key : new String[]{"directory", "largest", "extensions"}) {
             modes.addView(button(key, () -> { mode = key; offset = 0; offsets.clear(); refreshBrowser(); }));
         }
+        modes.addView(button("view_changes", () -> { mode = "changes"; offset = 0; offsets.clear(); refreshBrowser(); }));
         modes.addView(button("allocated", () -> { allocated = !allocated; setting("allocated",allocated ? 1 : 0); refreshBrowser(); }));
         modes.addView(button("settings", this::settings));
         modes.addView(button("sort", () -> {
@@ -316,6 +321,7 @@ public final class StorageActivity extends NativeActivity {
     private void renderPage(JSONObject page) {
         if (page.has("generation") && !isCurrent(page.optLong("generation"))) { handler.postDelayed(this::refreshBrowser, 100); return; }
         lastPageGeneration = page.optLong("generation");
+        historical = page.optBoolean("historical", false);
         browserRows.removeAllViews();
         String status = page.optString("status", "unavailable");
         if (status.equals("waiting") && lastMessage != null) {
@@ -373,10 +379,12 @@ public final class StorageActivity extends NativeActivity {
             + text("allocated") + ": " + entry.optString("allocated_label") + "\n" + locator;
         if (entry.optBoolean("hard_link")) details += "\n" + text("hard_link_note");
         if (!entry.isNull("error")) details += "\n" + text(entry.optString("error"));
-        new AlertDialog.Builder(viewContext()).setTitle(entry.optString("name")).setMessage(details)
-            .setPositiveButton(text("reveal"), (d, w) -> view(locator))
+        AlertDialog.Builder dialog = new AlertDialog.Builder(viewContext()).setTitle(entry.optString("name")).setMessage(details)
             .setNeutralButton(text("copy_path"), (d, w) -> copy(locator))
-            .setNegativeButton(text("close"), (d, w) -> {}).show();
+            .setNegativeButton(text("close"), (d, w) -> {});
+        // A saved result's locations come from a file, not from a grant this app holds.
+        if (!historical) dialog.setPositiveButton(text("reveal"), (d, w) -> view(locator));
+        dialog.show();
     }
     private void copy(String locator) {
         android.content.ClipboardManager clipboard = (android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
@@ -435,6 +443,30 @@ public final class StorageActivity extends NativeActivity {
                 exportDone(id, success ? 1 : 0);
             }); return;
         }
+        if (request == OPEN_SAVED) {
+            final long id = openId, limit = openLimit;
+            openId = 0;
+            if (result != RESULT_OK || data == null || data.getData() == null) { openDone(id, result == RESULT_CANCELED ? 2 : 0, null); return; }
+            final Uri chosen = data.getData();
+            // Only the chosen file is copied (bounded) into app-private storage; Rust reads and deletes the copy.
+            new Thread(() -> {
+                File target = new File(getCacheDir(), "spacemosaic-import-" + id + ".json");
+                int outcome = 0;
+                try (InputStream input = getContentResolver().openInputStream(chosen); OutputStream output = new FileOutputStream(target)) {
+                    if (input == null) throw new IOException("source_unavailable");
+                    byte[] bytes = new byte[64 * 1024]; long total = 0; int count;
+                    while ((count = input.read(bytes)) != -1) {
+                        total += count;
+                        if (total > limit) { outcome = 3; break; }
+                        output.write(bytes, 0, count);
+                    }
+                    if (outcome == 0) outcome = 1;
+                } catch (Exception error) { outcome = 0; }
+                if (outcome != 1) target.delete();
+                openDone(id, outcome, outcome == 1 ? target.getAbsolutePath() : null);
+            }, "saved-result-copy").start();
+            return;
+        }
         if (request != PICK_TREE) return;
         pickerOpen = false;
         if (result != RESULT_OK || data == null || data.getData() == null) { send(pickerGeneration, "cancelled", null, false, null); return; }
@@ -487,8 +519,21 @@ public final class StorageActivity extends NativeActivity {
                 });
                 return new JSONObject().put("accepted", true).toString();
             }
+            if (op.equals("open_saved")) {
+                long id = request.getLong("id"), limit = request.getLong("limit");
+                runOnUiThread(() -> {
+                    if (destroyed || openId != 0 || pickerOpen || exportSource != null) { openDone(id, 0, null); return; }
+                    openId = id; openLimit = limit;
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+                        .putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json", "text/json", "text/plain", "application/octet-stream"});
+                    try { startActivityForResult(intent, OPEN_SAVED); }
+                    catch (RuntimeException error) { openId = 0; openDone(id, 0, null); }
+                });
+                return new JSONObject().put("accepted", true).toString();
+            }
             if (op.equals("copy") || op.equals("view")) {
                 String locator = request.getString("locator");
+                if (op.equals("view") && historical) return "{}";
                 runOnUiThread(() -> { if (op.equals("copy")) copy(locator); else view(locator); }); return "{}";
             }
             if (op.equals("cancel")) {
@@ -562,6 +607,7 @@ public final class StorageActivity extends NativeActivity {
         handler.removeCallbacksAndMessages(null);
         if (browserDialog != null) browserDialog.dismiss();
         if (exportSource != null) exportDone(exportId, 0);
+        if (openId != 0) { openDone(openId, 0, null); openId = 0; }
         if (current.get() == this) current.clear();
         worker.shutdownNow(); super.onDestroy();
     }

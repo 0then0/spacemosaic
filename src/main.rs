@@ -9,7 +9,8 @@ unsafe extern "C" {
 }
 
 fn main() -> eframe::Result {
-    let path = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+    // Folders are scanned; a .json file is opened as a saved result. Both may be given.
+    let paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_icon(
@@ -30,8 +31,16 @@ fn main() -> eframe::Result {
                 spacemosaic_register_about_icon();
             }
             let mut app = spacemosaic::ui::ExplorerApp::new(cc);
-            if let Some(path) = path {
-                app.start(path);
+            for path in paths {
+                let saved = path.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+                if saved {
+                    app.open_result(path);
+                } else {
+                    app.start(path);
+                }
             }
             Ok(Box::new(app))
         }),

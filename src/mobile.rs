@@ -54,6 +54,7 @@ pub enum Command {
     Language(usize),
     Appearance(usize),
     Allocated(bool),
+    OpenSaved,
 }
 fn commands() -> &'static Mutex<VecDeque<(u64, Command)>> {
     static VALUE: OnceLock<Mutex<VecDeque<(u64, Command)>>> = OnceLock::new();
@@ -77,6 +78,9 @@ struct State {
     directory: usize,
     can_back: bool,
     settings_open: bool,
+    /// The browsed result is an opened file: its recorded locations are never actionable.
+    historical: bool,
+    comparison: Option<Arc<crate::compare::Comparison>>,
 }
 fn state() -> &'static Mutex<State> {
     static VALUE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -100,6 +104,31 @@ pub fn publish(generation: u64, result: Arc<scan::ScanResult>) {
         *state().lock().unwrap_or_else(|p| p.into_inner()) = State {
             generation,
             result: Some(result),
+            ..Default::default()
+        };
+    }
+}
+/// Show the result now on the canvas, whether live or opened from a file.
+pub fn publish_view(
+    generation: u64,
+    result: Arc<scan::ScanResult>,
+    historical: bool,
+    comparison: Option<Arc<crate::compare::Comparison>>,
+) {
+    if bridge::is_current(generation) {
+        let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
+        state.generation = generation;
+        state.result = Some(result);
+        state.progress = None;
+        state.historical = historical;
+        state.comparison = comparison;
+    }
+}
+/// Nothing is browsed any more (for example the saved result was closed).
+pub fn clear_view(generation: u64) {
+    if bridge::is_current(generation) {
+        *state().lock().unwrap_or_else(|p| p.into_inner()) = State {
+            generation,
             ..Default::default()
         };
     }
@@ -175,6 +204,7 @@ pub fn page(request: &str) -> String {
             "language" => Command::Language(index),
             "appearance" => Command::Appearance(index),
             "allocated" => Command::Allocated(index != 0),
+            "open_saved" => Command::OpenSaved,
             _ => return "{}".into(),
         };
         if matches!(command, Command::Navigate(_) | Command::Select(_))
@@ -188,12 +218,14 @@ pub fn page(request: &str) -> String {
         }
         return json!({"accepted":enqueue(generation,command)}).to_string();
     }
-    let (generation, result, progress) = {
+    let (generation, result, progress, historical, comparison) = {
         let state = state().lock().unwrap_or_else(|p| p.into_inner());
         (
             state.generation,
             state.result.clone(),
             state.progress.clone(),
+            state.historical,
+            state.comparison.clone(),
         )
     };
     if !bridge::is_current(generation) {
@@ -211,9 +243,87 @@ pub fn page(request: &str) -> String {
             "known_bytes":progress.as_ref().map(|p| p.known_bytes).unwrap_or(0),
             "errors":progress.as_ref().map(|p| p.errors).unwrap_or(0), "entries":[]}).to_string();
     };
-    result_page(&result, generation, &request).to_string()
+    let mut page = result_page(&result, generation, &request, comparison.as_deref());
+    page["historical"] = json!(historical);
+    page.to_string()
 }
-fn result_page(result: &scan::ScanResult, generation: u64, request: &Value) -> Value {
+fn changes_page(
+    comparison: Option<&crate::compare::Comparison>,
+    language: usize,
+    request: &Value,
+) -> (usize, usize, Vec<Value>, String) {
+    use crate::compare::{ChangeSort, Dimension, Status};
+    let Some(comparison) = comparison else {
+        return (
+            0,
+            0,
+            Vec::new(),
+            crate::i18n::text(language, "cmp_none_native").into(),
+        );
+    };
+    let query = request["query"].as_str().unwrap_or("");
+    let sort = if request["sort"].as_str() == Some("name") {
+        ChangeSort::Name
+    } else {
+        ChangeSort::Growth
+    };
+    let dimension =
+        if request["allocated"].as_bool() == Some(true) && comparison.allocated_available {
+            Dimension::Allocated
+        } else {
+            Dimension::Logical
+        };
+    let rows = comparison.events(dimension, Status::CHANGED, query, sort);
+    let totals = comparison.totals(dimension);
+    let summary = format!(
+        "{} {} · {}",
+        crate::i18n::text(
+            language,
+            if totals.is_complete() {
+                "cmp_tile_net"
+            } else {
+                "cmp_tile_net_partial"
+            }
+        ),
+        crate::i18n::signed_bytes(language, totals.net()),
+        crate::i18n::counted(language, totals.unknown_count, "object")
+    );
+    let offset = request["offset"]
+        .as_u64()
+        .and_then(|v| usize::try_from(v).ok())
+        .unwrap_or(0)
+        .min(rows.len());
+    let entries = rows
+        .iter()
+        .skip(offset)
+        .take(provider::PAGE_ENTRIES)
+        .map(|&row| {
+            let i = row as usize;
+            let node = comparison.nodes[i];
+            let status = comparison.event_status(i, dimension);
+            let change = if status == Status::Unknown {
+                crate::i18n::text(language, "unknown").to_owned()
+            } else {
+                crate::i18n::signed_bytes(language, node.confirmed(dimension))
+            };
+            let reason = node
+                .reason(dimension)
+                .key()
+                .map(|key| format!("\n{}", crate::i18n::text(language, key)))
+                .unwrap_or_default();
+            json!({"name":comparison.name(i),
+                "size_label":format!("{} {} · {}{}",status.symbol(),crate::i18n::text(language,status.key()),change,reason),
+                "count_label":comparison.path(i),"directory":false})
+        })
+        .collect();
+    (rows.len(), offset, entries, summary)
+}
+fn result_page(
+    result: &scan::ScanResult,
+    generation: u64,
+    request: &Value,
+    comparison: Option<&crate::compare::Comparison>,
+) -> Value {
     let directory = request["directory"]
         .as_u64()
         .and_then(|v| usize::try_from(v).ok())
@@ -242,7 +352,10 @@ fn result_page(result: &scan::ScanResult, generation: u64, request: &Value) -> V
         .as_u64()
         .and_then(|v| usize::try_from(v).ok())
         .unwrap_or(0);
-    let (total, offset, mut entries) = if mode == "extensions" {
+    let (total, offset, mut entries) = if mode == "changes" {
+        let (total, offset, entries, _) = changes_page(comparison, language, request);
+        (total, offset, entries)
+    } else if mode == "extensions" {
         let extensions: Vec<_> = result
             .extensions()
             .into_iter()
@@ -277,6 +390,9 @@ fn result_page(result: &scan::ScanResult, generation: u64, request: &Value) -> V
         "directory":directory,"parent":result.nodes[directory].parent,"name":result.nodes[directory].name,
         "offset":offset,"total":total});
     response["allocated_available"] = json!(allocated_available);
+    if mode == "changes" {
+        response["summary"] = json!(changes_page(comparison, language, request).3);
+    }
     if let Some(reason) = result.incomplete_reason() {
         let summary = response["summary"].as_str().unwrap_or_default();
         response["summary"] = json!(format!(
@@ -414,6 +530,71 @@ pub fn export_complete(id: u64, outcome: ExportOutcome) {
     }
 }
 
+/// A saved result chosen in a native document picker. The picker copies only that
+/// one file into app-private storage; Rust reads the copy and deletes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenOutcome {
+    Ready(PathBuf),
+    Cancelled,
+    TooLarge,
+    Failed,
+}
+struct OpenRequest {
+    id: u64,
+    sender: mpsc::SyncSender<OpenOutcome>,
+}
+fn opens() -> &'static Mutex<Option<OpenRequest>> {
+    static VALUE: OnceLock<Mutex<Option<OpenRequest>>> = OnceLock::new();
+    VALUE.get_or_init(Mutex::default)
+}
+pub fn request_open() -> Option<mpsc::Receiver<OpenOutcome>> {
+    static SERIAL: AtomicU64 = AtomicU64::new(1);
+    let id = SERIAL
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
+        .ok()?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    {
+        let mut pending = opens().lock().unwrap_or_else(|p| p.into_inner());
+        if pending.is_some() {
+            return None;
+        }
+        *pending = Some(OpenRequest { id, sender });
+    }
+    let accepted = request(
+        json!({"op":"open_saved", "id":id, "limit":crate::import::Limits::platform().max_bytes}),
+    )
+    .is_ok_and(|response| response["accepted"].as_bool() == Some(true));
+    if !accepted {
+        open_complete(id, 0, None);
+        return None;
+    }
+    Some(receiver)
+}
+/// Called by the platform once the picker finished. Codes: 1 ready, 2 cancelled,
+/// 3 too large, anything else failed. Stale or unknown ids are ignored.
+pub fn open_complete(id: u64, code: i32, path: Option<&str>) {
+    let mut pending = opens().lock().unwrap_or_else(|p| p.into_inner());
+    if pending.as_ref().is_some_and(|open| open.id == id) {
+        let open = pending.take().expect("matching open");
+        drop(pending);
+        let valid = path.map(PathBuf::from).filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("spacemosaic-import-"))
+        });
+        let outcome = match (code, valid) {
+            (1, Some(path)) => OpenOutcome::Ready(path),
+            (2, _) => OpenOutcome::Cancelled,
+            (3, _) => OpenOutcome::TooLarge,
+            _ => OpenOutcome::Failed,
+        };
+        if let (OpenOutcome::Failed | OpenOutcome::TooLarge, Some(path)) = (&outcome, path) {
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = open.sender.try_send(outcome);
+        bridge::wake();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +618,7 @@ mod tests {
                 complete: true,
                 hard_link: false,
                 error: None,
+                listing_complete: None,
                 path: None,
             })
             .collect();
@@ -450,6 +632,8 @@ mod tests {
             limit_reason: None,
             cross_filesystems: false,
             errors: 0,
+            scope_identity: None,
+            app_version: None,
             nodes,
         }
     }
@@ -498,7 +682,7 @@ mod tests {
             ..Default::default()
         };
         for language in crate::i18n::TAGS {
-            let page = result_page(&result, 7, &json!({"language":language}));
+            let page = result_page(&result, 7, &json!({"language":language}), None);
             let index = crate::i18n::TAGS
                 .iter()
                 .position(|tag| *tag == language)
@@ -531,18 +715,19 @@ mod tests {
     #[test]
     fn native_results_are_paged_sorted_and_filtered_without_storage_access() {
         let result = result(1000);
-        let first = result_page(&result, 7, &json!({"language":"ru"}));
+        let first = result_page(&result, 7, &json!({"language":"ru"}), None);
         assert_eq!(first["entries"].as_array().unwrap().len(), 32);
         assert_eq!(first["entries"][0]["id"], 1000);
         assert_eq!(first["next"], 32);
         assert_eq!(first["total"], 1000);
         assert_eq!(first["has_more"], true);
-        let next = result_page(&result, 7, &json!({"offset":32}));
+        let next = result_page(&result, 7, &json!({"offset":32}), None);
         assert_ne!(next["entries"][0]["id"], first["entries"][0]["id"]);
         let filtered = result_page(
             &result,
             7,
             &json!({"mode":"largest","query":"file-123.dat"}),
+            None,
         );
         assert_eq!(filtered["total"], 1);
         assert_eq!(
@@ -555,7 +740,7 @@ mod tests {
                 .unwrap()
                 .contains("Unknown")
         );
-        let types = result_page(&result, 7, &json!({"mode":"extensions"}));
+        let types = result_page(&result, 7, &json!({"mode":"extensions"}), None);
         assert_eq!(types["entries"][0]["name"], "dat");
         assert!(types["entries"][0]["id"].is_null());
     }
@@ -565,12 +750,12 @@ mod tests {
         for node in &mut result.nodes[1..] {
             node.locator.push_str(&"x".repeat(40 * 1024));
         }
-        let page = result_page(&result, 8, &json!({}));
+        let page = result_page(&result, 8, &json!({}), None);
         let count = page["entries"].as_array().unwrap().len();
         assert!(count > 0 && count < provider::PAGE_ENTRIES);
         assert_eq!(page["next"], count);
         assert!(page.to_string().len() <= provider::PAGE_BYTES);
-        let next = result_page(&result, 8, &json!({"offset":count}));
+        let next = result_page(&result, 8, &json!({"offset":count}), None);
         assert_ne!(page["entries"][0]["id"], next["entries"][0]["id"]);
     }
     #[test]
@@ -658,11 +843,88 @@ mod tests {
             unknown: 2,
             ..Default::default()
         };
-        let page = result_page(&result, 1, &json!({"allocated":true}));
+        let page = result_page(&result, 1, &json!({"allocated":true}), None);
         assert_eq!(page["allocated_available"], false);
         for entry in page["entries"].as_array().unwrap() {
             assert_eq!(entry["size_label"], entry["logical_label"]);
             assert_ne!(entry["size_label"], entry["allocated_label"]);
         }
+    }
+
+    #[test]
+    fn native_changes_page_lists_events_and_saved_results_are_flagged_historical() {
+        use crate::compare;
+        use std::sync::atomic::AtomicBool;
+        let baseline = result(3);
+        let mut current = result(3);
+        current.nodes[1].logical.known += 5000;
+        current.nodes[2].logical.unknown = 1;
+        current.nodes[2].logical.known = 0;
+        scan::aggregate(&mut current.nodes);
+        let comparison = compare::compare(
+            Arc::new(baseline),
+            Arc::new(current.clone()),
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let page = result_page(
+            &current,
+            3,
+            &json!({"mode":"changes","language":"en"}),
+            Some(&comparison),
+        );
+        let entries = page["entries"].as_array().unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e["size_label"].as_str().unwrap().contains("Grew"))
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e["size_label"].as_str().unwrap().contains("Change unknown"))
+        );
+        assert!(
+            page["summary"]
+                .as_str()
+                .unwrap()
+                .contains("CONFIRMED NET CHANGE")
+        );
+        let empty = result_page(&current, 3, &json!({"mode":"changes"}), None);
+        assert_eq!(empty["total"], 0);
+        let _session = bridge::SESSION_TEST_LOCK.lock().unwrap();
+        let generation = bridge::begin();
+        publish_view(generation, Arc::new(current), true, None);
+        let page: Value = serde_json::from_str(&page_request("{}")).unwrap();
+        assert_eq!(page["historical"], true);
+    }
+    fn page_request(request: &str) -> String {
+        page(request)
+    }
+    #[test]
+    fn native_open_requests_accept_only_matching_ids_and_private_copies() {
+        let _session = bridge::SESSION_TEST_LOCK.lock().unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        *opens().lock().unwrap() = Some(OpenRequest { id: 77, sender });
+        open_complete(76, 1, Some("/tmp/spacemosaic-import-76.json"));
+        assert!(receiver.try_recv().is_err(), "a stale id changes nothing");
+        // A path outside the app's naming scheme is never trusted.
+        open_complete(77, 1, Some("/etc/passwd"));
+        assert_eq!(receiver.try_recv().unwrap(), OpenOutcome::Failed);
+        assert!(opens().lock().unwrap().is_none());
+        for (code, expected) in [(2, OpenOutcome::Cancelled), (3, OpenOutcome::TooLarge)] {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            *opens().lock().unwrap() = Some(OpenRequest { id: 78, sender });
+            open_complete(78, code, None);
+            assert_eq!(receiver.try_recv().unwrap(), expected);
+        }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        *opens().lock().unwrap() = Some(OpenRequest { id: 79, sender });
+        open_complete(79, 1, Some("/tmp/spacemosaic-import-79.json"));
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            OpenOutcome::Ready(PathBuf::from("/tmp/spacemosaic-import-79.json"))
+        );
     }
 }

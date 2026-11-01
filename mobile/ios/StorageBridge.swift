@@ -169,6 +169,11 @@ private final class NativeStorage {
             DispatchQueue.main.async { PickerBridge.shared.save(id, url: url) }
             return ["accepted": true]
         }
+        if op == "open_saved" {
+            let id = (request["id"] as? NSNumber)?.uint64Value ?? 0, limit = (request["limit"] as? NSNumber)?.uint64Value ?? 0
+            DispatchQueue.main.async { PickerBridge.shared.openSaved(id, limit: limit) }
+            return ["accepted": true]
+        }
         if op == "copy" || op == "view" {
             let locator = request["locator"] as? String ?? ""
             DispatchQueue.main.async {
@@ -221,6 +226,38 @@ private final class ExportDelegate: NSObject, UIDocumentPickerDelegate {
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finish(2) }
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { finish(urls.isEmpty ? 0 : 1) }
 }
+/// Receives one saved result chosen by the user. The system copies only that file; it is
+/// copied once more, bounded, into temporary storage that Rust reads and deletes.
+@MainActor
+private final class OpenDelegate: NSObject, UIDocumentPickerDelegate {
+    let id: UInt64, limit: UInt64
+    private var completed = false
+    init(_ id: UInt64, limit: UInt64) { self.id = id; self.limit = limit }
+    private func finish(_ outcome: Int32, path: String? = nil) {
+        guard !completed else { return }; completed = true
+        if let path = path { path.withCString { spacemosaic_open_done(id, outcome, $0) } } else { spacemosaic_open_done(id, outcome, nil) }
+        PickerBridge.shared.openFinished()
+    }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finish(2) }
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let source = urls.first else { finish(0); return }
+        let id = self.id, limit = self.limit
+        DispatchQueue.global(qos: .userInitiated).async {
+            let target = FileManager.default.temporaryDirectory.appendingPathComponent("spacemosaic-import-\(id).json")
+            var outcome: Int32 = 0
+            do {
+                let size = (try source.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { UInt64($0) } ?? 0
+                if size > limit { outcome = 3 }
+                else {
+                    try? FileManager.default.removeItem(at: target)
+                    try FileManager.default.copyItem(at: source, to: target)
+                    outcome = 1
+                }
+            } catch { outcome = 0 }
+            DispatchQueue.main.async { self.finish(outcome, path: outcome == 1 ? target.path : nil) }
+        }
+    }
+}
 @MainActor
 private final class PickerBridge: NSObject, UIDocumentPickerDelegate {
     static let shared = PickerBridge()
@@ -228,6 +265,7 @@ private final class PickerBridge: NSObject, UIDocumentPickerDelegate {
     private var launcher: UIButton?
     private var picker: UIDocumentPickerViewController?
     private var exportDelegate: ExportDelegate?
+    private var openDelegate: OpenDelegate?
     private var generation: UInt64 = 0
     var pickerStatus: String = "waiting"
     static func window() -> UIWindow? {
@@ -266,7 +304,7 @@ private final class PickerBridge: NSObject, UIDocumentPickerDelegate {
     }
     func receive(_ status: String) { pickerStatus = status; browser?.reload() }
     func pick(_ generation: UInt64) {
-        guard picker == nil && exportDelegate == nil else { send(generation, status: "unavailable", error: "picker_busy"); return }
+        guard picker == nil && exportDelegate == nil && openDelegate == nil else { send(generation, status: "unavailable", error: "picker_busy"); return }
         guard let presenter = Self.presenter() else { send(generation, status: "unavailable", error: "window_unavailable"); return }
         self.generation = generation; pickerStatus = "waiting"; browser?.reset()
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder], asCopy: false)
@@ -302,6 +340,14 @@ private final class PickerBridge: NSObject, UIDocumentPickerDelegate {
         picker.delegate = delegate; presenter.present(picker, animated: !UIAccessibility.isReduceMotionEnabled)
     }
     func exportFinished() { exportDelegate = nil }
+    func openFinished() { openDelegate = nil }
+    func openSaved(_ id: UInt64, limit: UInt64) {
+        guard openDelegate == nil && exportDelegate == nil && picker == nil, let presenter = Self.presenter() else { spacemosaic_open_done(id, 0, nil); return }
+        let delegate = OpenDelegate(id, limit: limit); openDelegate = delegate
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.json], asCopy: true)
+        picker.allowsMultipleSelection = false; picker.delegate = delegate
+        presenter.present(picker, animated: !UIAccessibility.isReduceMotionEnabled)
+    }
     func open(_ locator: String) {
         guard let root = nativeStorage.selectedURL(), let url = URL(string: locator),
             url.isFileURL, let presenter = Self.presenter() else { return }
@@ -363,15 +409,15 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
         let actionButton = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), style: .plain, target: nil, action: nil)
         actionButton.menu = actions(); actionButton.accessibilityLabel = nativeText("actions")
         navigationItem.rightBarButtonItems = [UIBarButtonItem(title: nativeText("choose"), style: .plain, target: self, action: #selector(choose)), actionButton]
-        let modes = UISegmentedControl(items: [nativeText("directory"), nativeText("largest"), nativeText("extensions")])
-        modes.selectedSegmentIndex = mode == "directory" ? 0 : (mode == "largest" ? 1 : 2)
+        let modes = UISegmentedControl(items: [nativeText("directory"), nativeText("largest"), nativeText("extensions"), nativeText("view_changes")])
+        modes.selectedSegmentIndex = ["directory", "largest", "extensions", "changes"].firstIndex(of: mode) ?? 0
         modes.addTarget(self, action: #selector(changeMode(_:)), for: .valueChanged)
         modes.frame = CGRect(x: 16, y: 8, width: max(200, view.bounds.width - 32), height: 40)
         let header = UIView(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: 56)); header.addSubview(modes)
         modes.autoresizingMask = [.flexibleWidth]; tableView.tableHeaderView = header; reload()
     }
     private func actions() -> UIMenu {
-        let commands = ["rescan", "cancel", "export_json", "export_csv", "sort", "allocated", "refresh_result"]
+        let commands = ["rescan", "cancel", "open_saved", "export_json", "export_csv", "sort", "allocated", "refresh_result"]
         let appearance = UIMenu(title: nativeText("appearance"), children: ["system","light","dark"].enumerated().map { index,key in
             UIAction(title:nativeText(key),state:nativeAppearance == index ? .on : .off) { _ in _ = rustPage(["command":"appearance","index":index]) }
         })
@@ -393,7 +439,7 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
     }
     @objc private func close() { dismiss(animated: !UIAccessibility.isReduceMotionEnabled) }
     @objc private func choose() { PickerBridge.shared.pick(spacemosaic_begin()) }
-    @objc private func changeMode(_ sender: UISegmentedControl) { mode = ["directory", "largest", "extensions"][sender.selectedSegmentIndex]; offset = 0; offsets = []; reload() }
+    @objc private func changeMode(_ sender: UISegmentedControl) { mode = ["directory", "largest", "extensions", "changes"][sender.selectedSegmentIndex]; offset = 0; offsets = []; reload() }
     func reset() { directory = 0; directories = []; offset = 0; offsets = []; mode = "directory"; search.searchBar.text = ""; sequence += 1; reload() }
     func updateSearchResults(for searchController: UISearchController) { offset = 0; offsets = []; reload() }
     private func navigate(_ index: Int, remember: Bool = true) {
@@ -478,7 +524,10 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
         if let error = entry["error"] as? String { detail += "\n" + nativeText(error) }
         let alert = UIAlertController(title: entry["name"] as? String, message: detail, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: nativeText("copy_path"), style: .default) { _ in UIPasteboard.general.string = locator })
-        alert.addAction(UIAlertAction(title: nativeText("reveal"), style: .default) { _ in PickerBridge.shared.open(locator) })
+        // A saved result's locations come from a file, not from access this app holds.
+        if page["historical"] as? Bool != true {
+            alert.addAction(UIAlertAction(title: nativeText("reveal"), style: .default) { _ in PickerBridge.shared.open(locator) })
+        }
         alert.addAction(UIAlertAction(title: nativeText("close"), style: .cancel))
         present(alert, animated: !UIAccessibility.isReduceMotionEnabled)
     }

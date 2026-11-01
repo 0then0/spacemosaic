@@ -98,6 +98,46 @@ The iOS Rust step emits a static library; Xcode resolves its Swift callbacks
 when linking the final application. Those jobs do not require personal signing
 certificates. The repository does not publish releases automatically.
 
+## Saved results and comparison
+
+`tests/comparison.rs`, `tests/import.rs` and the UI tests cover: growth, a
+missing object and an addition totalling +650 MiB without double-counting
+folders; an unreadable-now folder that is unknown and not freed space; an
+incomplete baseline that cannot declare objects new; one unknown size giving an
+unknown delta; equal sizes reported only as equal sizes; renames, file/folder
+replacements and type changes; scope verdicts (matching, insufficient,
+incompatible, provider authority and root spelling, platform, schema 1);
+exact-name matching for invalid UTF-8, case, Unicode forms and duplicate
+provider names; full-range `u64` deltas and overflow; a generated-tree property
+check that the net total equals the difference of root sizes and containers sum
+their children once; schema 1 import with unknowns intact; rejection of damaged,
+cyclic, oversized, endless, deeply nested, contradictory and unsupported
+documents; export → delete source → import → compare; sequential opens and
+cancellation; the saved banner, no recorded-location actions, comparison rows in
+all seven languages, both themes, desktop/phone sizes and 1.6× text, phone Back,
+swap/confirmation flow, and a 120,000-object comparison. Mobile result pages and
+open requests are tested on the host. The Rust code behind the Android and iOS
+bridges type-checks for `aarch64-linux-android` and `aarch64-apple-ios`
+(`cargo check --lib --target …`); that is not a build, an installation or a
+device test. The Java and Swift changes were only syntax-checked
+(`swiftc -parse`; `javac` cannot resolve Android classes without an SDK).
+
+### Saved-result acceptance on devices (not yet performed)
+
+1. Scan a disposable folder with a nested folder and an unreadable one; export JSON.
+2. Close the app completely, delete or rename the folder, reopen, **Open saved
+   result**, pick the JSON (from a local and a provider location). Expect the
+   banner, tree, sizes, unknown values and partial flag; no scan starts; there is
+   no "Show in file manager" and Rescan stays unavailable.
+3. Restore the folder with changes (grow one file, delete one, add one, make a
+   folder unreadable), scan it, choose **Compare with current scan**. Check
+   direction, statuses, totals, "not a total" wording with the unreadable folder,
+   and **Show in current/baseline result**.
+4. Pick a damaged and an oversized file; expect a clear error and no change.
+5. Android: system Back from details, comparison and saved result; TalkBack on the
+   native browser **Changes** mode. iOS: VoiceOver on the same, and the picker's
+   copy semantics. Rotate and use large text throughout.
+
 ## Manual acceptance scenarios
 
 Use a disposable folder with a known-size file, an empty file, nested folders,

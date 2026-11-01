@@ -172,6 +172,25 @@ pub extern "system" fn Java_dev_spacemosaic_StorageActivity_exportDone<'local>(
     .resolve::<ThrowRuntimeExAndDefault>();
 }
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_spacemosaic_StorageActivity_openDone<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JClass<'local>,
+    id: jni::sys::jlong,
+    outcome: jni::sys::jint,
+    path: JString<'local>,
+) {
+    env.with_env(|env| -> Result<()> {
+        let path = if path.is_null() {
+            None
+        } else {
+            Some(path.try_to_string(env)?)
+        };
+        crate::mobile::open_complete(id as u64, outcome, path.as_deref());
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>();
+}
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_spacemosaic_StorageActivity_back<'local>(
     mut env: EnvUnowned<'local>,
     _: JClass<'local>,

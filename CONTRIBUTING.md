@@ -40,6 +40,9 @@ volume, or a shared storage provider as part of an automated test. Add tests
 for observable behavior, particularly partial errors, cancellation, aggregation,
 export, and layout hit testing. See [testing](docs/testing.md).
 
+Result files are input data: keep `docs/format.md` and `docs/comparison.md` in step
+with `import` and `compare`, and never act on a locator that came from a file.
+
 All interface strings must have nonempty entries in `en`, `ru`, `es`, `de`,
 `fr`, `ja`, and `pt-BR`. Keep machine-readable keys, paths, and export numbers
 independent of display language. Check long labels and large text in both themes.

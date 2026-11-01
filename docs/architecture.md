@@ -9,6 +9,9 @@ multi-crate framework.
 - `scan`: local and provider metadata traversal, aggregate size measures, bounded background
   scheduling, result filtering, file-type summaries, and export.
 - `treemap`: squarified rectangle layout and hit testing, independent of egui.
+- `import`: bounded, validating import of exported JSON ([format](format.md)).
+- `compare`: scope assessment and the baseline/current diff ([comparison](comparison.md)).
+- `job`: cancellable open/compare jobs; one heavy job at a time, superseded jobs cannot deliver.
 - `bridge`: picker acknowledgements and generation-based isolation.
 - `provider`: bounded native metadata pages behind the `scan::Storage` cursor.
 - `mobile`: paged result access, native commands, and asynchronous save handoff.
@@ -30,7 +33,8 @@ children. A reverse pass aggregates size measures without recursive stack use.
 Known bytes, unknown measurements, and overflow are separate fields. Hard links
 are counted per path. Symlinks and Windows reparse points are not followed.
 Native path bytes/UTF-16 are retained in JSON alongside a human-readable path.
-Schema 1 also permits an optional `limit_reason` field (`node_limit` or
+Schema 2 adds scope identity and per-directory listing state; schema 1 stays readable
+(see [format](format.md)). Schema 1 also permits an optional `limit_reason` field (`node_limit` or
 `memory_limit`) when `limited` is true. Older schema-1 exports without that field
 remain readable and receive a generic resource-limit explanation. Cancellation
 continues to use the separate `cancelled` flag. These machine fields do not
@@ -74,6 +78,10 @@ Native list controls page through the same completed Rust result. They do not
 walk storage separately. Requests run off the main thread and coalesce during
 search or progress updates. Native commands have a bounded queue and reject
 stale picker generations and result-row actions during rescanning.
+
+Opening a saved result: desktop reads the chosen file; Android uses `ACTION_OPEN_DOCUMENT`
+and iOS a copying document picker, each copying only that file (bounded) to private
+temporary storage that Rust reads and deletes. Recorded locators are never actionable.
 
 Exports stream JSON or write the CSV summary to an app-private temporary file.
 Android uses `ACTION_CREATE_DOCUMENT` and copies only this export to the

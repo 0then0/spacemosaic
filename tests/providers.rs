@@ -84,7 +84,10 @@ fn recursive_provider_pages_aggregate_unknown_sizes_and_export_opaque_uris() {
         0
     );
     let json: Value = serde_json::from_slice(&result.json().unwrap()).unwrap();
-    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["scope_identity"]["source"], "android_saf");
+    assert_eq!(json["nodes"][0]["listing_complete"], true);
+    assert!(json["nodes"][1].get("listing_complete").is_none());
     assert_eq!(json["nodes"][0]["logical"]["unknown"], 2);
     assert!(result.csv().contains("dat"));
     assert_eq!(result.search("nested", true, scan::Sort::Size).len(), 1);
@@ -218,6 +221,7 @@ impl Storage for Blocked {
             complete: false,
             hard_link: false,
             error: None,
+            listing_complete: None,
             path: None,
         }
     }
