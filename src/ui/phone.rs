@@ -66,7 +66,7 @@ impl ExplorerApp {
     }
     pub(super) fn phone_icon(ui: &mut egui::Ui, icon: &str, label: &str) -> bool {
         let response = ui.add_sized([48.0, 48.0], egui::Button::new(icon));
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
         response.on_hover_text(label).clicked()
     }
     pub(super) fn phone(&mut self, ui: &mut egui::Ui) {
@@ -235,7 +235,7 @@ impl ExplorerApp {
                 );
                 #[cfg(not(target_os = "android"))]
                 response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, t("search"))
+                    egui::WidgetInfo::labeled(egui::Role::TextInput, true, t("search"))
                 });
                 #[cfg(not(target_os = "android"))]
                 if response.changed() {
@@ -365,12 +365,12 @@ impl ExplorerApp {
                     );
                     let response = ui.interact(
                         body,
-                        ui.id().with(("phone-row", index)),
+                        ui.scope_id().with(("phone-row", index)),
                         egui::Sense::click(),
                     );
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             true,
                             format!(
                                 "{}: {}, {}",
@@ -447,7 +447,7 @@ impl ExplorerApp {
                     );
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             true,
                             format!("{}: {}", t("phone_details"), node.name),
                         )

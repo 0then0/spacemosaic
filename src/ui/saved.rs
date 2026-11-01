@@ -739,9 +739,8 @@ impl ExplorerApp {
             );
         }
         let summary = format!("{status}: {name}, {before} → {now}, {change}");
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, summary.clone())
-        });
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, summary.clone()));
         let indent = (depth.saturating_sub(1) as f32 * 16.0).min(rect.width() * 0.3);
         let mut left = rect.left() + 4.0 + indent;
         if tree {
@@ -753,12 +752,12 @@ impl ExplorerApp {
                 let open = self.changes.expanded.contains(&index);
                 let response = ui.interact(
                     toggle,
-                    ui.id().with(("change-toggle", index)),
+                    ui.scope_id().with(("change-toggle", index)),
                     egui::Sense::click(),
                 );
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
+                        egui::Role::Button,
                         true,
                         format!("{}: {}", t(if open { "collapse" } else { "expand" }), name),
                     )
@@ -1038,12 +1037,7 @@ impl ExplorerApp {
                     .selected(on),
                 );
                 response.widget_info(|| {
-                    egui::WidgetInfo::selected(
-                        egui::WidgetType::Checkbox,
-                        true,
-                        on,
-                        t(status.key()),
-                    )
+                    egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, t(status.key()))
                 });
                 if response.clicked() {
                     self.changes.statuses ^= status.bit();

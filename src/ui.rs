@@ -77,6 +77,9 @@ pub struct ExplorerApp {
     open_name: String,
     open_error: Option<crate::import::ImportError>,
     changes: Changes,
+    /// Id of the resizable map panel, which depends on its parent ui in egui 0.37.
+    #[cfg(test)]
+    map_panel_id: Option<egui::Id>,
     #[cfg(any(target_os = "android", target_os = "ios"))]
     native_open: Option<mpsc::Receiver<crate::mobile::OpenOutcome>>,
     scope: Option<PathBuf>,
@@ -189,6 +192,8 @@ impl ExplorerApp {
             open_name: String::new(),
             open_error: None,
             changes: Changes::default(),
+            #[cfg(test)]
+            map_panel_id: None,
             #[cfg(any(target_os = "android", target_os = "ios"))]
             native_open: None,
             scope: None,
@@ -714,7 +719,7 @@ impl ExplorerApp {
             .max_width(bounds.width())
             .max_height(bounds.height())
             .vscroll(true)
-            .id(egui::Id::new("settings-window"))
+            .id(egui::Id::unique("settings-window"))
             .open(&mut open)
             .resizable(false)
             .default_width(280.0)
@@ -1156,7 +1161,7 @@ impl ExplorerApp {
                                 );
                                 response.widget_info(|| {
                                     egui::WidgetInfo::labeled(
-                                        egui::WidgetType::Button,
+                                        egui::Role::Button,
                                         true,
                                         format!(
                                             "{}: {}",
@@ -1353,10 +1358,13 @@ impl ExplorerApp {
                 .map(|i| result.nodes[i].name.as_str())
                 .unwrap_or(t("grouped_items"));
             let selected = selected_tile == Some(position);
-            let response =
-                ui.interact(area, ui.id().with(("tile", position)), egui::Sense::click());
+            let response = ui.interact(
+                area,
+                ui.scope_id().with(("tile", position)),
+                egui::Sense::click(),
+            );
             response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+                egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label)
             });
             let color = tile_color(objects[position].map(|i| &result.nodes[i]));
             ui.painter().rect_filled(area, 4.0, color);
@@ -1596,7 +1604,7 @@ impl ExplorerApp {
                 );
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(
-                        egui::WidgetType::Button,
+                        egui::Role::Button,
                         true,
                         active,
                         if active {
@@ -1705,6 +1713,11 @@ impl ExplorerApp {
                             ui.add_space(12.0);
                             self.map(ui, ui.available_height(), true);
                         });
+                    #[cfg(test)]
+                    {
+                        self.map_panel_id =
+                            Some(ui.scope_id().with_salt(egui::IdSalt::new("treemap-panel")));
+                    }
                     let strip = egui::Rect::from_min_size(
                         panel.response.rect.min,
                         egui::vec2(panel.response.rect.width(), 12.0),
@@ -2571,9 +2584,11 @@ mod tests {
                     );
                     output.textures_delta.clear();
                 }
-                let window =
-                    egui::containers::AreaState::load(&context, egui::Id::new("settings-window"))
-                        .unwrap();
+                let window = egui::containers::AreaState::load(
+                    &context,
+                    egui::Id::unique("settings-window"),
+                )
+                .unwrap();
                 assert!(
                     window.rect().top() >= top,
                     "settings title is under the status bar"
@@ -2747,6 +2762,7 @@ mod tests {
                 egui::Event::PointerMoved(egui::pos2(300.0, 450.0)),
                 egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
+                    source: egui::MouseWheelSource::Unknown,
                     delta: egui::vec2(0.0, -900.0),
                     phase: egui::TouchPhase::Move,
                     modifiers: Default::default(),
@@ -2776,10 +2792,8 @@ mod tests {
             }
             let output = frame(&mut app, &context, vec![]);
             let grip = text_position(&output, i18n::text(0, "resize_map"));
-            let state = || {
-                egui::containers::panel::PanelState::load(&context, egui::Id::new("treemap-panel"))
-                    .unwrap()
-            };
+            let panel_id = app.map_panel_id.unwrap();
+            let state = || egui::containers::panel::PanelState::load(&context, panel_id).unwrap();
             let before = state().size().y;
             frame(
                 &mut app,
@@ -2887,8 +2901,7 @@ mod tests {
         }
         let output = frame(&mut app, &context, vec![]);
         let panel =
-            egui::containers::panel::PanelState::load(&context, egui::Id::new("treemap-panel"))
-                .unwrap();
+            egui::containers::panel::PanelState::load(&context, app.map_panel_id.unwrap()).unwrap();
         assert!(
             panel.size().y >= 200.0,
             "map panel shrank: {:?}",
@@ -2946,6 +2959,7 @@ mod tests {
                                     )),
                                     egui::Event::MouseWheel {
                                         unit: egui::MouseWheelUnit::Point,
+                                        source: egui::MouseWheelSource::Unknown,
                                         phase: egui::TouchPhase::Move,
                                         delta: egui::vec2(0.0, -180.0),
                                         modifiers: Default::default(),
@@ -3303,7 +3317,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                ui.memory_mut(|memory| memory.request_focus(ui.id().with(("tile", 0usize))));
+                ui.memory_mut(|memory| memory.request_focus(ui.scope_id().with(("tile", 0usize))));
                 app.map(ui, 260.0, false);
             },
         );
