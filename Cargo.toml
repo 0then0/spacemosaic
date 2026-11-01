@@ -29,7 +29,7 @@ serde_json = "=1.0.154"
 fastframe-i18n = { git = "https://github.com/crmne/fastframe", rev = "2b04c0eed57e450461a5bef61fdebc93ed7d7226" }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-eframe = { version = "=0.36.2", optional = true, default-features = false, features = ["default_fonts", "glow", "accesskit", "wayland", "x11"] }
+eframe = { version = "=0.37.0", optional = true, default-features = false, features = ["default_fonts", "glow", "accesskit", "wayland", "x11"] }
 rfd = { version = "=0.17.2", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
