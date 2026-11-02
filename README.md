@@ -73,8 +73,9 @@ and the [result format](docs/format.md).
 Open **Settings** to choose a language, text size, or **System**, **Light**,
 and **Dark** appearance. The system option follows OS appearance changes; explicit choices override it. The visual
 style uses layered neutral surfaces without shadows, readable typography, and
-restrained sage section labels. Theme, language, and text-size choices currently
-apply to the current session.
+restrained sage section labels. Language and appearance preferences are saved locally; desktop window size,
+position, and maximized state are restored too. Text-size changes apply to the
+current session.
 
 English is the primary project language. The interface includes English,
 Russian, Spanish, German, French, Japanese, and Brazilian Portuguese. A bundled

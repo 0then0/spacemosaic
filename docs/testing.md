@@ -20,11 +20,12 @@ provider acceptance.
 Current build outcomes and downloadable artifacts are recorded in
 [GitHub Actions](https://github.com/0then0/spacemosaic/actions/workflows/ci.yml).
 
-The `v0.1.0` release distributes builds for all five platforms.
-macOS arm64 is runtime-verified; Windows, Linux, Android, and iOS downloads remain
-experimental. No mobile device support is certified. The full mobile acceptance
-criteria remain open until runtime evidence is available. A published artifact
-or successful build does not establish runtime qualification.
+The [v0.2.0 release](https://github.com/0then0/spacemosaic/releases/tag/v0.2.0)
+distributes builds for all five platforms. macOS arm64 has runtime verification,
+and Pixel 8 with Android 17 has user-reported runtime testing. Windows, Linux
+and iOS remain experimental. Full mobile acceptance, including accessibility
+and in-place upgrades, remains open. A published artifact or successful build
+does not establish runtime qualification.
 
 ## Automated checks
 
