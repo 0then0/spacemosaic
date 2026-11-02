@@ -11,7 +11,7 @@ fn kib(source: &str, key: &str) -> Option<u64> {
         .flatten()
 }
 #[cfg(any(target_os = "linux", test))]
-fn linux_sample() -> Snapshot {
+pub(super) fn linux_sample() -> Snapshot {
     let info = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     let mut s = Snapshot {
@@ -454,7 +454,7 @@ mod tests {
             &mut s,
             "0::/a/b",
             "29 23 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup rw",
-            |p| match p.to_str().unwrap() {
+            |p| match p.to_str().unwrap().replace('\\', "/").as_str() {
                 "/sys/fs/cgroup/a/b/memory.max" => Some("max".into()),
                 "/sys/fs/cgroup/a/memory.max" => Some("1000".into()),
                 "/sys/fs/cgroup/a/memory.current" => Some("900".into()),
@@ -470,7 +470,7 @@ mod tests {
             &mut s,
             "5:memory:/slice/task",
             "29 23 0:26 /slice /cg rw - cgroup cgroup rw,memory",
-            |p| match p.to_str().unwrap() {
+            |p| match p.to_str().unwrap().replace('\\', "/").as_str() {
                 "/cg/task/memory.limit_in_bytes" => Some("1024".into()),
                 "/cg/task/memory.usage_in_bytes" => Some("2048".into()),
                 _ => None,
