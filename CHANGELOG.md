@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.0 — 2026-11-02
+
+- Add persistent automatic and manual scan memory budgets using platform memory readings and pressure signals.
+- Replace fixed scan object caps with memory admission checks and preserve partial results with explicit stop reasons.
+- Distinguish scanner estimates from process measurements; update all seven translations and mobile settings.
+- Write JSON schema 3 and CSV schema 2; continue reading JSON schemas 1 and 2. Independent saved-result import limits remain.
+- Reduce duplicate sorting of wide directories and fix Linux sampler visibility and Windows cgroup fixtures.
+
+
 ## v0.2.0 — 2026-11-01
 
 ### Added
