@@ -22,7 +22,7 @@
   "logical_bytes": "Logical size in bytes",
   "incomplete_directory": "Directory not fully scanned. Its complete size is unknown.",
   "scan_node_limit": "Scan stopped: object limit reached. Some folders were not scanned.",
-  "scan_memory_limit": "Scan stopped: metadata memory limit reached. Some folders were not scanned.",
+  "scan_memory_limit": "Scan stopped to preserve memory. Some folders were not scanned.",
   "scan_limited": "Scan stopped: resource limit reached.",
   "scan_cancelled": "Scan cancelled. The result covers only the objects already read.",
   "scan_incomplete": "Some folders or metadata could not be read or were skipped.",
@@ -226,5 +226,17 @@
   "cmp_limit_crossing": "The scans used different filesystem-boundary settings.",
   "cmp_limit_allocated": "Allocated space was not measured in both results; only logical sizes are compared.",
   "cmp_limit_older_schema": "At least one result uses the older format; its folder listing state is inferred cautiously.",
-  "cmp_limit_user_confirmed": "Same-area correspondence was confirmed by you, not by recorded data."
+  "cmp_limit_user_confirmed": "Same-area correspondence was confirmed by you, not by recorded data.",
+  "memory_settings": "Scan memory",
+  "memory_automatic": "Automatic",
+  "memory_manual": "Manual",
+  "memory_help": "Automatic selects a budget at scan start from device memory and available OS limits, leaving room for the system and other app work. Manual: 16–4096 MiB for estimated scanner data, not total app memory. Either mode may stop early under memory pressure. Partial results remain available; scan a selected folder separately for more detail.",
+  "memory_budget": "Selected scan budget",
+  "memory_estimate": "Estimated scanner memory",
+  "memory_process_rss": "Process RSS at start / last sample",
+  "memory_process_footprint": "Process footprint at start / last sample",
+  "scan_memory_pressure": "Scan stopped: critical memory pressure. Collected data is available.",
+  "scan_process_memory": "Scan stopped: process memory growth exceeded its allowance.",
+  "scan_capacity_limit": "Scan stopped: collection capacity cannot grow safely.",
+  "memory_invalid": "Enter a whole number from 16 to 4096 MiB."
 }

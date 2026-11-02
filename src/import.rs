@@ -22,8 +22,8 @@ const MAX_CODE_BYTES: usize = 64;
 const UNIX_PREFIX: &str = "unix-bytes:";
 const WINDOWS_PREFIX: &str = "windows-utf16:";
 
-/// Upper bounds for one import. They mirror the scanner budgets so that a file
-/// this device could not have produced is refused rather than half-loaded.
+/// Independent defensive bounds for one untrusted import. Scans now have an
+/// adaptive budget and can produce a file larger than these import limits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub max_bytes: u64,
@@ -33,7 +33,7 @@ pub struct Limits {
 impl Limits {
     pub const DESKTOP: Self = Self {
         max_bytes: 1024 * 1024 * 1024,
-        max_nodes: crate::scan::DEFAULT_NODE_LIMIT,
+        max_nodes: 500_000,
         memory_limit: 256 * 1024 * 1024,
     };
     pub const MOBILE: Self = Self {
@@ -313,6 +313,7 @@ impl<'de> Visitor<'de> for Document<'_> {
         let mut errors = None::<u64>;
         let mut identity = None::<Option<ScopeIdentity>>;
         let mut app_version = None::<Option<String>>;
+        let mut memory = None::<Option<crate::memory::Diagnostics>>;
         let mut nodes = None::<Vec<Node>>;
         macro_rules! once {
             ($slot:ident, $value:expr) => {{
@@ -344,6 +345,7 @@ impl<'de> Visitor<'de> for Document<'_> {
                 "errors" => once!(errors, map.next_value()?),
                 "scope_identity" => once!(identity, map.next_value()?),
                 "app_version" => once!(app_version, map.next_value()?),
+                "memory" => once!(memory, map.next_value()?),
                 "nodes" => once!(nodes, map.next_value_seed(Nodes(context))?),
                 _ => {
                     // Unknown fields from later minor additions are skipped, not trusted.
@@ -369,6 +371,7 @@ impl<'de> Visitor<'de> for Document<'_> {
             errors: errors.ok_or_else(missing)?,
             scope_identity: identity.flatten(),
             app_version: app_version.flatten(),
+            memory: memory.flatten(),
             nodes: nodes.ok_or_else(missing)?,
         })
     }

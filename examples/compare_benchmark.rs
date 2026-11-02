@@ -62,6 +62,7 @@ fn result(nodes: Vec<Node>) -> ScanResult {
         cancelled: false,
         limited: false,
         limit_reason: None,
+        memory: None,
         cross_filesystems: false,
         errors: 0,
         scope_identity: Some(ScopeIdentity {

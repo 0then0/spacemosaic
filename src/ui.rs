@@ -123,6 +123,7 @@ impl ExplorerApp {
         }
         app.language = app.preferences.language_index();
         app.appearance = app.preferences.appearance;
+        crate::mobile::configure_memory(app.preferences.scan_memory);
         app.saved_preferences = app.preferences.clone();
         cc.egui_ctx.set_theme(app.appearance.preference());
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -227,11 +228,13 @@ impl ExplorerApp {
             return;
         };
         self.preferences.appearance = self.appearance;
+        crate::mobile::configure_memory(self.preferences.scan_memory);
         if self.preferences == self.saved_preferences {
             return;
         }
         let settings_changed = self.preferences.appearance != self.saved_preferences.appearance
-            || self.preferences.language != self.saved_preferences.language;
+            || self.preferences.language != self.saved_preferences.language
+            || self.preferences.scan_memory != self.saved_preferences.scan_memory;
         if !force
             && (self.preferences_write_failed || !settings_changed)
             && self.last_preferences_write.elapsed() < Duration::from_secs(1)
@@ -257,6 +260,7 @@ impl ExplorerApp {
             path.clone(),
             scan::Options {
                 cross_filesystems: self.cross_filesystems,
+                memory_mode: self.preferences.scan_memory,
                 ..Default::default()
             },
         ));
@@ -288,8 +292,7 @@ impl ExplorerApp {
         let job = self.service.start_storage(
             Box::new(provider),
             scan::Options {
-                node_limit: 100_000,
-                memory_limit: 64 * 1024 * 1024,
+                memory_mode: self.preferences.scan_memory,
                 ..Default::default()
             },
         );
@@ -317,6 +320,29 @@ impl ExplorerApp {
     /// Open an exported JSON result for viewing; the folder it describes is not read.
     pub fn open_result(&mut self, path: PathBuf) {
         self.open_saved(path, false);
+    }
+    fn scan_folder(&mut self, index: usize) {
+        if self.view != View::Live {
+            return;
+        }
+        let Some(result) = self.result.clone() else {
+            return;
+        };
+        let Some(node) = result
+            .nodes
+            .get(index)
+            .filter(|n| n.kind == Kind::Directory)
+        else {
+            return;
+        };
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        if let Some(path) = &node.path {
+            self.start(path.clone());
+        }
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        if let Some((generation, _)) = self.provider_scope.clone() {
+            self.start_provider(generation, node.locator.clone(), Some(node.name.clone()));
+        }
     }
     fn rescan(&mut self) {
         #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -402,7 +428,7 @@ impl ExplorerApp {
             }
             if self.children_sort != Some((self.sort, self.allocated)) {
                 for children in &mut self.children {
-                    children.sort_by(|a, b| {
+                    children.sort_unstable_by(|a, b| {
                         let size = |i: usize| {
                             if self.allocated {
                                 result.nodes[i].allocated.known
@@ -411,10 +437,7 @@ impl ExplorerApp {
                             }
                         };
                         let by_name = || {
-                            result.nodes[*a]
-                                .name
-                                .to_lowercase()
-                                .cmp(&result.nodes[*b].name.to_lowercase())
+                            scan::compare_names(&result.nodes[*a].name, &result.nodes[*b].name)
                                 .then(a.cmp(b))
                         };
                         if self.sort == Sort::Size {
@@ -453,7 +476,9 @@ impl ExplorerApp {
             } else if self.page == Page::Largest {
                 result.search("", true, self.sort)
             } else {
-                result.children(self.directory, "", self.sort)
+                // Already sorted above; reuse the index instead of allocating
+                // scratch space and sorting the same wide directory twice.
+                self.children[self.directory].clone()
             };
         }
         if self.allocated
@@ -548,6 +573,11 @@ impl ExplorerApp {
                 use crate::mobile::Command;
                 match command {
                     Command::Rescan => self.rescan(),
+                    Command::ScanFolder(index) => self.scan_folder(index),
+                    Command::Memory(mode) => {
+                        self.preferences.scan_memory = mode;
+                        crate::mobile::configure_memory(mode);
+                    }
                     Command::Cancel => {
                         if let Some(job) = &self.job {
                             job.cancel();
@@ -776,6 +806,31 @@ impl ExplorerApp {
                     ui.checkbox(&mut self.cross_filesystems, t("cross_filesystems"));
                     ui.label(t("mount_policy"));
                 }
+                ui.separator();
+                ui.label(t("memory_settings"));
+                let mut automatic = matches!(
+                    self.preferences.scan_memory,
+                    crate::memory::BudgetMode::Automatic
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.selectable_value(&mut automatic, true, t("memory_automatic"));
+                    ui.selectable_value(&mut automatic, false, t("memory_manual"));
+                });
+                self.preferences.scan_memory = if automatic {
+                    crate::memory::BudgetMode::Automatic
+                } else {
+                    let mut mib = match self.preferences.scan_memory {
+                        crate::memory::BudgetMode::Manual { mib } => mib,
+                        _ => 64,
+                    };
+                    ui.add(
+                        egui::DragValue::new(&mut mib)
+                            .range(crate::memory::MIN_MANUAL_MIB..=crate::memory::MAX_MANUAL_MIB)
+                            .suffix(" MiB"),
+                    );
+                    crate::memory::BudgetMode::Manual { mib }
+                };
+                ui.label(t("memory_help"));
                 if ui.button(t("close")).clicked() {
                     close = true;
                 }
@@ -929,6 +984,13 @@ impl ExplorerApp {
                 ));
             });
             ui.label(RichText::new(t("size_caveat")).small().weak());
+            if let Some(memory) = &result.memory {
+                ui.label(
+                    RichText::new(i18n::memory_diagnostics(language, memory))
+                        .small()
+                        .weak(),
+                );
+            }
             if let Some(reason) = result.incomplete_reason() {
                 ui.label(t(reason));
             }
@@ -1470,11 +1532,8 @@ impl ExplorerApp {
                     if let Some(reason) = result.incomplete_reason() {
                         ui.label(t(reason));
                     }
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                    if let Some(path) = &node.path
-                        && ui.button(t("scan_folder_separately")).clicked()
-                    {
-                        self.start(path.clone());
+                    if self.view == View::Live && ui.button(t("scan_folder_separately")).clicked() {
+                        self.scan_folder(index);
                     }
                 }
                 ui.horizontal_wrapped(|ui| {
@@ -2214,6 +2273,7 @@ mod tests {
             cancelled: false,
             limited: false,
             limit_reason: None,
+            memory: None,
             cross_filesystems: false,
             errors: 0,
             scope_identity: None,
@@ -3226,6 +3286,7 @@ mod tests {
             cancelled: false,
             limited: false,
             limit_reason: None,
+            memory: None,
             cross_filesystems: false,
             errors: 0,
             scope_identity: None,
@@ -3921,6 +3982,7 @@ mod tests {
             cancelled: false,
             limited: false,
             limit_reason: None,
+            memory: None,
             cross_filesystems: false,
             errors: 0,
             scope_identity: None,
@@ -3974,6 +4036,86 @@ mod tests {
             compare_time,
             frame_time,
             started.elapsed()
+        );
+    }
+    #[test]
+    #[ignore = "explicit performance measurement on a large synthetic tree"]
+    fn scan_memory_responsiveness_measurement() {
+        use crate::scan::memory_tests::Generated;
+        let mut app = ExplorerApp::empty();
+        app.language = 0;
+        app.phone_home = false;
+        let context = egui::Context::default();
+        theme::install(&context);
+        context.set_fonts(crate::fonts::definitions());
+        frame(&mut app, &context, vec![]); // Exclude initial font atlas work.
+        app.job = Some(app.service.start_storage(
+            Box::new(Generated::new(600_000)),
+            scan::Options {
+                memory_mode: crate::memory::BudgetMode::Manual { mib: 1024 },
+                ..Default::default()
+            },
+        ));
+        let mut times = Vec::new();
+        let mut result_frame = Duration::ZERO;
+        let started = Instant::now();
+        while app.job.is_some() {
+            let frame_start = Instant::now();
+            frame(&mut app, &context, vec![]);
+            let elapsed = frame_start.elapsed();
+            if app.job.is_some() {
+                times.push(elapsed);
+            } else {
+                result_frame = elapsed;
+            }
+            assert!(started.elapsed() < Duration::from_secs(60));
+            if app.job.is_some() {
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        }
+        let result = app.result.as_ref().unwrap();
+        assert_eq!(result.nodes.len(), 600_001);
+        assert!(!result.limited);
+        times.sort();
+        eprintln!(
+            "scan responsiveness: objects={}, scan_ms={}, scanning_frames={}, frame_p95_us={}, frame_max_us={}, first_result_frame_us={}, estimated_scanner_bytes={}, budget_bytes={} (headless egui, release={})",
+            result.nodes.len(),
+            result.elapsed_millis,
+            times.len(),
+            times[times.len() * 95 / 100].as_micros(),
+            times.last().unwrap().as_micros(),
+            result_frame.as_micros(),
+            result.memory.as_ref().unwrap().estimated_scanner_bytes,
+            result.memory.as_ref().unwrap().budget_bytes,
+            !cfg!(debug_assertions)
+        );
+        // Cancellation uses a new scan, without retaining/copying the previous tree.
+        app.result = None;
+        app.live = None;
+        let job = app.service.start_storage(
+            Box::new(Generated::new(usize::MAX)),
+            scan::Options {
+                memory_mode: crate::memory::BudgetMode::Manual { mib: 1024 },
+                ..Default::default()
+            },
+        );
+        while job.progress.lock().unwrap().objects < 100_000 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let cancel_start = Instant::now();
+        job.cancel();
+        let cancelled = loop {
+            if let Some(result) = job.take() {
+                break result;
+            }
+            assert!(cancel_start.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(cancelled.cancelled);
+        eprintln!(
+            "cancel responsiveness: objects={}, cancel_to_result_us={} (includes aggregation and 1 ms polling)",
+            cancelled.nodes.len(),
+            cancel_start.elapsed().as_micros()
         );
     }
 }

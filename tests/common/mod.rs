@@ -189,6 +189,7 @@ impl Builder {
             cancelled: self.cancelled,
             limited: false,
             limit_reason: None,
+            memory: None,
             cross_filesystems: self.cross_filesystems,
             errors,
             scope_identity: (!self.v1).then(|| ScopeIdentity {

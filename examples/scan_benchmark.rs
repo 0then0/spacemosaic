@@ -40,14 +40,22 @@ fn main() -> std::io::Result<()> {
     }
     let result = scan::scan(
         &fixture.0,
-        Options::default(),
+        Options {
+            memory_mode: std::env::args()
+                .nth(2)
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|v| (16..=4096).contains(v))
+                .map(|mib| spacemosaic::memory::BudgetMode::Manual { mib })
+                .unwrap_or_default(),
+            ..Default::default()
+        },
         &AtomicBool::new(false),
         &Mutex::new(Progress::default()),
     );
     println!(
         "{}",
         serde_json::json!({"fixture_files":count,"objects":result.nodes.len(),"scan_millis":result.elapsed_millis,
-        "known_logical_bytes":result.nodes[0].logical.known,"errors":result.errors,"limited":result.limited,"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH})
+        "known_logical_bytes":result.nodes[0].logical.known,"errors":result.errors,"limited":result.limited,"limit_reason":result.limit_reason,"memory":result.memory,"platform":std::env::consts::OS,"architecture":std::env::consts::ARCH})
     );
     Ok(())
 }

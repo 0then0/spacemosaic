@@ -2,6 +2,44 @@ import Foundation
 import UIKit
 import UniformTypeIdentifiers
 import Darwin
+import os
+
+// Scan-specific observers retain their ID even if notification delivery races a rescan.
+private final class ScanMemory {
+    private let lock = NSLock()
+    private var id: UInt64 = 0
+    private var observer: NSObjectProtocol?
+    func start(_ scan: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        if let observer = observer { NotificationCenter.default.removeObserver(observer) }
+        id = scan
+        observer = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil, queue: nil) { _ in spacemosaic_memory_pressure(scan) }
+    }
+    func stop(_ scan: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        guard id == scan else { return }
+        if let observer = observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil; id = 0
+    }
+    func sample() -> [String: Any] {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let status = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        // iOS 13+, below the app's iOS 16 deployment target. Zero can mean that
+        // the process is not an app: preserve unknown, rather than infer a limit.
+        let headroom = os_proc_available_memory()
+        return ["physical": ProcessInfo.processInfo.physicalMemory,
+                "process": status == KERN_SUCCESS ? info.phys_footprint as Any : NSNull(),
+                "process_metric": status == KERN_SUCCESS ? "physical_footprint" as Any : NSNull(),
+                "process_headroom": headroom > 0 ? headroom as Any : NSNull()]
+    }
+}
+private let scanMemory = ScanMemory()
 
 private enum ProviderFailure: Error { case code(String) }
 private func errorCode(_ error: Error) -> String {
@@ -158,6 +196,9 @@ private final class NativeStorage {
     }
     func request(_ request: [String: Any]) -> [String: Any] {
         let op = request["op"] as? String ?? "", generation = (request["generation"] as? NSNumber)?.uint64Value ?? 0, scan = (request["scan"] as? NSNumber)?.uint64Value ?? 0
+        if op == "memory_start" { scanMemory.start((request["id"] as? NSNumber)?.uint64Value ?? 0); return [:] }
+        if op == "memory_stop" { scanMemory.stop((request["id"] as? NSNumber)?.uint64Value ?? 0); return [:] }
+        if op == "memory" { return scanMemory.sample() }
         if op == "cache" {
             let id = (request["id"] as? NSNumber)?.uint64Value ?? 0, json = request["json"] as? Bool ?? true
             return ["path": cacheURL(id, json: json).path]
@@ -402,6 +443,29 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
         search.obscuresBackgroundDuringPresentation = false; search.searchResultsUpdater = self
         navigationItem.searchController = search; configure(); reload()
     }
+    private func memorySettings() {
+        let setting = rustPage(["command":"memory_setting"])
+        let alert = UIAlertController(title: nativeText("memory_settings"), message: nativeText("memory_help"), preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: nativeText("memory_automatic"), style: .default) { _ in
+            _ = rustPage(["command":"memory_automatic"])
+        })
+        alert.addAction(UIAlertAction(title: nativeText("memory_manual"), style: .default) { _ in
+            let manual = UIAlertController(title: nativeText("memory_manual") + " (MiB)", message: nativeText("memory_help"), preferredStyle: .alert)
+            manual.addTextField { field in field.keyboardType = .numberPad; field.text = "\(setting["mib"] as? Int ?? 64)" }
+            manual.addAction(UIAlertAction(title: nativeText("memory_manual"), style: .default) { _ in
+                guard let text = manual.textFields?.first?.text, let mib = UInt32(text), (16...4096).contains(mib) else {
+                    let error = UIAlertController(title: nativeText("memory_invalid"), message: nil, preferredStyle: .alert)
+                    error.addAction(UIAlertAction(title: nativeText("close"), style: .cancel))
+                    self.present(error, animated: false); return
+                }
+                _ = rustPage(["command":"memory_manual","mib":mib])
+            })
+            manual.addAction(UIAlertAction(title: nativeText("close"), style: .cancel))
+            self.present(manual, animated: false)
+        })
+        alert.addAction(UIAlertAction(title: nativeText("close"), style: .cancel))
+        present(alert, animated: false)
+    }
     func configure() {
         guard isViewLoaded else { return }
         title = nativeText("accessible_browser"); search.searchBar.placeholder = nativeText("search_hint")
@@ -435,7 +499,13 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
                 self.sequence += 1; _ = rustPage(["command": command]); DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.reload() }
             }
         }
-        return UIMenu(children:items + [appearance,language])
+        let memory = UIAction(title: nativeText("memory_settings")) { [weak self] _ in self?.memorySettings() }
+        let folder = UIAction(title: nativeText("scan_folder_separately")) { [weak self] _ in
+            guard let self = self else { return }
+            let accepted = rustPage(["command":"scan_folder","index":self.directory,"generation":self.page["generation"] ?? 0])
+            if accepted["accepted"] as? Bool == true { self.reset() }
+        }
+        return UIMenu(children:items + [appearance,language,memory] + (page["historical"] as? Bool == true ? [] : [folder]))
     }
     @objc private func close() { dismiss(animated: !UIAccessibility.isReduceMotionEnabled) }
     @objc private func choose() { PickerBridge.shared.pick(spacemosaic_begin()) }

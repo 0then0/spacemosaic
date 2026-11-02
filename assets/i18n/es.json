@@ -22,7 +22,7 @@
   "logical_bytes": "Tamaño lógico en bytes",
   "incomplete_directory": "El directorio no se ha analizado por completo. Su tamaño total es desconocido.",
   "scan_node_limit": "Análisis detenido: se alcanzó el límite de objetos. Algunas carpetas no se analizaron.",
-  "scan_memory_limit": "Análisis detenido: se alcanzó el límite de memoria para metadatos. Algunas carpetas no se analizaron.",
+  "scan_memory_limit": "Análisis detenido para conservar memoria. Algunas carpetas no se analizaron.",
   "scan_limited": "Análisis detenido: se alcanzó el límite de recursos.",
   "scan_cancelled": "Análisis cancelado. El resultado solo incluye los objetos ya leídos.",
   "scan_incomplete": "No se pudieron leer algunas carpetas o metadatos, o se omitieron.",
@@ -226,5 +226,17 @@
   "cmp_limit_crossing": "Los análisis usaron ajustes distintos para los límites del sistema de archivos.",
   "cmp_limit_allocated": "El espacio asignado no se midió en ambos resultados; solo se comparan tamaños lógicos.",
   "cmp_limit_older_schema": "Al menos un resultado usa el formato antiguo; el estado de lectura de sus carpetas se deduce con cautela.",
-  "cmp_limit_user_confirmed": "La correspondencia del ámbito la confirmó usted, no los datos registrados."
+  "cmp_limit_user_confirmed": "La correspondencia del ámbito la confirmó usted, no los datos registrados.",
+  "memory_settings": "Memoria del análisis",
+  "memory_automatic": "Automático",
+  "memory_manual": "Manual",
+  "memory_help": "El presupuesto automático se elige al iniciar según la memoria del dispositivo y los límites disponibles del sistema, con reservas para el sistema y otras tareas. Manual: 16–4096 MiB para la memoria estimada del analizador, no de toda la aplicación. Ambos modos pueden detenerse por falta de memoria. Puede consultar el resultado parcial y analizar una carpeta seleccionada por separado.",
+  "memory_budget": "Presupuesto de análisis elegido",
+  "memory_estimate": "Memoria estimada del analizador",
+  "memory_process_rss": "RSS del proceso al inicio / última muestra",
+  "memory_process_footprint": "Huella de memoria al inicio / última muestra",
+  "scan_memory_pressure": "Análisis detenido: presión de memoria crítica. Los datos recopilados están disponibles.",
+  "scan_process_memory": "Análisis detenido: el aumento de memoria del proceso superó su margen.",
+  "scan_capacity_limit": "Análisis detenido: no se puede ampliar la capacidad de las colecciones de forma segura.",
+  "memory_invalid": "Introduzca un entero entre 16 y 4096 MiB."
 }

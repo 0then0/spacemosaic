@@ -277,3 +277,16 @@ pub fn search(query: &str) {
         Ok(())
     });
 }
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_spacemosaic_StorageActivity_memoryPressure<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JClass<'local>,
+    id: jni::sys::jlong,
+) {
+    env.with_env(|_| -> Result<()> {
+        crate::memory::pressure(id as u64);
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>();
+}

@@ -104,18 +104,24 @@ partial or unknown results.
 
 An unread or incomplete directory is not an empty directory. When no bytes are
 known, the UI displays **Unknown** instead of `0 B`. Partial results identify
-cancellation, the object limit, or the metadata memory limit. Desktop object
+cancellation, memory pressure, or the scanner memory budget. Desktop object
 details offer **Scan this folder separately** for incomplete directories; this
 starts a new scan with that folder as the selected scope.
 
-Desktop scans are limited to 500,000 objects and an estimated 256 MiB metadata
-budget; mobile scans use 100,000 objects and 64 MiB. Reaching either limit leaves
-an explicit partial result. These budgets guard stored node data, not total
-process memory. Provider cursors, filtering, font atlases, and the UI require
-additional memory. JSON exports stream to a temporary file before saving. Opening a
-saved result applies the same object and metadata budgets (desktop 500,000 objects and
-256 MiB, mobile 100,000 and 64 MiB) to each result; a comparison holds two results and
-its difference rows at once.
+Scans use a saved **Automatic** memory policy by default, chosen at scan start
+from device memory and available platform limits, with reserves for the OS and
+other app work. **Manual** accepts 16–4096 MiB of estimated scanner data. Either
+mode can stop on critical memory pressure and retain a partial result. The
+former 500,000/100,000 object caps are no longer the normal scan policy.
+Diagnostics separate chosen budget, estimated scanner data and measured process
+memory. This is a heuristic guard, not an OOM guarantee or a disk-backed tree.
+See [memory policy and platform sources](docs/memory.md).
+
+JSON exports stream to a temporary file before saving. Saved-file import still
+has independent defensive limits: desktop 500,000 objects / 256 MiB estimated
+metadata; mobile 100,000 / 64 MiB. A large new scan may therefore be exportable
+but too large to reopen with the current importer. Comparison retains two
+results plus difference rows and indexes at once.
 
 ## Download
 

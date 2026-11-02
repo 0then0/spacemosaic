@@ -167,7 +167,11 @@ impl Storage for Provider {
         }
     }
     fn close_directory(&mut self) {
+        self.pending.clear();
         let _ = self.request("close", None);
+    }
+    fn memory_reserve(&self) -> usize {
+        2 * 1024 * 1024
     }
     fn interrupt(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         let transport = self.transport.clone();

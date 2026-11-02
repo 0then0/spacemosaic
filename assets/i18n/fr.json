@@ -22,7 +22,7 @@
   "logical_bytes": "Taille logique en octets",
   "incomplete_directory": "Le dossier n’a pas été entièrement analysé. Sa taille totale est inconnue.",
   "scan_node_limit": "Analyse arrêtée : limite du nombre d’objets atteinte. Certains dossiers n’ont pas été analysés.",
-  "scan_memory_limit": "Analyse arrêtée : limite de mémoire des métadonnées atteinte. Certains dossiers n’ont pas été analysés.",
+  "scan_memory_limit": "Analyse arrêtée pour préserver la mémoire. Certains dossiers n’ont pas été analysés.",
   "scan_limited": "Analyse arrêtée : limite de ressources atteinte.",
   "scan_cancelled": "Analyse annulée. Le résultat ne contient que les objets déjà lus.",
   "scan_incomplete": "Certains dossiers ou métadonnées sont inaccessibles ou ont été ignorés.",
@@ -226,5 +226,17 @@
   "cmp_limit_crossing": "Les analyses ont utilisé des réglages différents pour les limites de système de fichiers.",
   "cmp_limit_allocated": "L’espace alloué n’a pas été mesuré dans les deux résultats ; seules les tailles logiques sont comparées.",
   "cmp_limit_older_schema": "Au moins un résultat utilise l’ancien format ; l’état de lecture de ses dossiers est déduit avec prudence.",
-  "cmp_limit_user_confirmed": "La correspondance des périmètres a été confirmée par vous, pas par les données enregistrées."
+  "cmp_limit_user_confirmed": "La correspondance des périmètres a été confirmée par vous, pas par les données enregistrées.",
+  "memory_settings": "Mémoire de l’analyse",
+  "memory_automatic": "Automatique",
+  "memory_manual": "Manuel",
+  "memory_help": "Le budget automatique est choisi au démarrage selon la mémoire de l’appareil et les limites système disponibles, avec une réserve pour le système et les autres tâches. Manuel : 16–4096 MiB pour les données estimées de l’analyse, pas toute l’application. Les deux modes peuvent s’arrêter par manque de mémoire. Le résultat partiel reste consultable ; un dossier sélectionné peut être analysé séparément.",
+  "memory_budget": "Budget d’analyse choisi",
+  "memory_estimate": "Mémoire estimée de l’analyse",
+  "memory_process_rss": "RSS du processus au départ / dernier relevé",
+  "memory_process_footprint": "Empreinte du processus au départ / dernier relevé",
+  "scan_memory_pressure": "Analyse arrêtée : pression mémoire critique. Les données recueillies sont disponibles.",
+  "scan_process_memory": "Analyse arrêtée : la hausse de mémoire du processus dépasse sa marge.",
+  "scan_capacity_limit": "Analyse arrêtée : impossible d’augmenter les collections en toute sécurité.",
+  "memory_invalid": "Saisissez un entier de 16 à 4096 MiB."
 }

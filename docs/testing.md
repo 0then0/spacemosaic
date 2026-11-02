@@ -236,3 +236,89 @@ Regression tests also cover opening file types from either result view, hiding
 unsupported extension search, using the scanned root for global result sizes
 and bars, and cancelling a second pending folder selection after nested or
 grouped navigation.
+
+## Adaptive scan memory verification (2026-11-02)
+
+Host verification on macOS 15.7.9 arm64 / Rust 1.99.1:
+
+- `cargo fmt --all --check`, `cargo clippy --locked --all-targets -- -D warnings`,
+  `cargo test --locked --all-targets`, `cargo test --locked --no-default-features`
+  and `cargo build --release --locked` passed.
+- The full GUI suite passed 132 tests, with one explicit performance test ignored
+  by default; that measurement was separately run successfully in release mode.
+  The no-default-features suite passed 82 tests. Tests inject readings/pressure,
+  cover nested v1/v2 cgroups and unlimited/error values, process metric matching,
+  input bounds and old preference migration, budget admission before growth,
+  retained unknowns/aggregates, cursor interruption/cleanup, cancellation,
+  obsolete pressure IDs, capacity overflow, JSON/CSV reasons, translations and
+  a 500,011-object generated scan. Windows 64-bit FFI structure sizes and both
+  Linux/Windows sampler bodies type-check on the host, without invoking foreign
+  APIs; this is not target/runtime qualification.
+- `cargo check --locked --lib --target aarch64-linux-android` and
+  `cargo check --locked --lib --target aarch64-apple-ios` passed.
+  `swiftc -parse mobile/ios/StorageBridge.swift` passed. Android Java could not
+  be compiled because the Android SDK/NDK is absent; iOS UIKit/Swift could not be
+  type-checked/linked because only Command Line Tools, not Xcode/iOS SDKs, are
+  installed. No mobile low-memory notification, provider cancellation or native
+  settings flow was exercised on a device.
+- After `python3 scripts/package-desktop.py`,
+  `python3 -m unittest discover -s tests -p 'test_*.py'` passed all 21 applicable
+  tests (25 total, four platform-specific skips). Fresh local ZIP/DMG artifacts,
+  the ad-hoc resource seal, read-only DMG installation layout and manifest were
+  verified outside the host sandbox, which prevents the required image mount.
+  The earlier stale-archive and mount failures are resolved. These packages
+  were built for verification only; no release was published.
+
+Actual scan/peak-memory/frame/cancel measurements and reproduction commands are
+in [performance.md](performance.md). All fixtures are disposable; no real OOM
+or scan of personal folders is required.
+
+Remaining checks in equipped environments:
+
+```sh
+# Windows and Linux runners: native sampler, process/job/cgroup pressure behavior
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+# Android SDK/NDK and JDK 17
+bash scripts/build-android.sh
+# Full Xcode/iOS SDKs and installed Rust simulator target
+bash scripts/build-ios.sh simulator
+bash scripts/build-ios.sh device
+```
+
+On Android/iOS, choose Automatic and Manual, restart to check persistence, scan
+a disposable provider tree, simulate a memory warning (not actual exhaustion),
+and confirm partial counts/reasons, JSON/CSV export and separate-folder scans.
+Interrupt a blocked provider; replace/reselect/rescan and inject an old-ID
+callback, verifying that it neither stops nor closes the newer cursor. Exercise
+Android 26–33 legacy trim callbacks separately from API 34+ MemoryInfo fallback.
+On iOS check footprint/headroom diagnostics and balanced security-scoped access.
+On desktop, check a constrained Windows job and Linux v1/v2 nested cgroups with
+synthetic fixtures and ample real RAM. Compilation alone does not qualify any
+of these native behaviors.
+
+### Review follow-up
+
+The review covered the task's complete working-tree change relative to
+`70bfc92`, including new memory modules and documentation; no dependency or
+configuration changes were introduced. One correction pass addressed:
+
+- **R1 (acceptance blocker):** successive allocations could reuse the same
+  sampled system/process/group headroom. A deterministic test reproduced the
+  failure with 100 MiB headroom, a 64 MiB reserve and two 24 MiB growths. The
+  monitor now charges total estimated growth since the sample, rebases only at
+  retained allocations after a fresh sample, and preserves that anchor across
+  pressure-only checks. The test covers all three headroom sources, rebasing,
+  unknown values and the unchanged selected budget. Provider hash growth is
+  distinguished from retained auxiliary memory when establishing that anchor.
+- **R2 (nonblocking):** Android separate-folder scanning retained the old search
+  and result mode and reset navigation even when Rust rejected the command.
+  Accepted scans now share Rescan's navigation/filter reset; rejected commands
+  preserve the current view. This correction is verified by code-path analysis;
+  Android SDK/device verification remains outstanding. Specifically test an
+  active search and file-type/changes mode, then a separate-folder scan, and a
+  rejected stale/saved-result command.
+
+The R1 reproducer failed before the fix and passed afterwards. The full host
+Rust suites, clippy, mobile Rust target checks and Swift parse were rerun after
+the correction. These do not prove native UI/device behavior.

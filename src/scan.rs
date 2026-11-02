@@ -12,9 +12,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub const DEFAULT_NODE_LIMIT: usize = 500_000;
-/// Version written by this release. Schema 1 files remain readable; see `import`.
-pub const SCHEMA_VERSION: u32 = 2;
+/// Version written by this release. Schemas 1 and 2 remain readable; see `import`.
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Measure {
@@ -85,6 +84,21 @@ pub struct Node {
 pub enum LimitReason {
     NodeLimit,
     MemoryLimit,
+    MemoryPressure,
+    ProcessMemoryLimit,
+    CapacityLimit,
+}
+
+impl LimitReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NodeLimit => "node_limit",
+            Self::MemoryLimit => "memory_limit",
+            Self::MemoryPressure => "memory_pressure",
+            Self::ProcessMemoryLimit => "process_memory_limit",
+            Self::CapacityLimit => "capacity_limit",
+        }
+    }
 }
 
 /// Kind of storage access that produced a result.
@@ -123,8 +137,10 @@ pub struct ScanResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit_reason: Option<LimitReason>,
     pub cross_filesystems: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<crate::memory::Diagnostics>,
     pub errors: u64,
-    /// Schema 2 only; `None` means the scan predates identity recording.
+    /// Schema 2 and later; `None` means the scan predates identity recording.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_identity: Option<ScopeIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,15 +151,19 @@ pub struct ScanResult {
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     pub cross_filesystems: bool,
+    /// Optional caller/test bound, not an ordinary scan policy.
     pub node_limit: usize,
+    /// Optional caller/test ceiling in addition to the adaptive policy.
     pub memory_limit: usize,
+    pub memory_mode: crate::memory::BudgetMode,
 }
 impl Default for Options {
     fn default() -> Self {
         Self {
             cross_filesystems: false,
-            node_limit: DEFAULT_NODE_LIMIT,
-            memory_limit: 256 * 1024 * 1024,
+            node_limit: usize::MAX,
+            memory_limit: usize::MAX,
+            memory_mode: crate::memory::BudgetMode::Automatic,
         }
     }
 }
@@ -321,12 +341,144 @@ fn provider_identity(root: &str) -> ScopeIdentity {
     }
 }
 
+/// Capacities and owned buffers, with a small allocator allowance per buffer.
+/// This is an estimate, not a global allocator or process memory measurement.
+fn node_heap(node: &Node) -> usize {
+    let strings = node
+        .name
+        .capacity()
+        .saturating_add(node.locator.capacity())
+        .saturating_add(node.native_locator.capacity())
+        .saturating_add(node.error.as_ref().map_or(0, String::capacity));
+    strings
+        .saturating_add(node.path.as_ref().map_or(0, PathBuf::capacity))
+        .saturating_add(5 * 16)
+}
+fn result_heap(result: &ScanResult) -> usize {
+    let identity = result.scope_identity.as_ref().map_or(0, |s| {
+        s.root.capacity().saturating_add(s.platform.capacity())
+    });
+    std::mem::size_of::<ScanResult>()
+        .saturating_add(result.scope.capacity())
+        .saturating_add(identity)
+        .saturating_add(result.app_version.as_ref().map_or(0, String::capacity))
+}
+fn bytes<T>(capacity: usize) -> usize {
+    capacity.saturating_mul(std::mem::size_of::<T>())
+}
+fn grown(capacity: usize, len: usize) -> Option<usize> {
+    if len < capacity {
+        Some(capacity)
+    } else {
+        capacity.max(4).checked_mul(2)
+    }
+}
+fn estimate(
+    nodes: usize,
+    heap: usize,
+    stack: usize,
+    seen: usize,
+    seen_heap: usize,
+    workspace: usize,
+) -> usize {
+    bytes::<Node>(nodes)
+        .saturating_add(heap)
+        .saturating_add(bytes::<usize>(stack))
+        // Hash table control bytes, load factor and implementation rounding.
+        .saturating_add(
+            seen.saturating_mul(2)
+                .saturating_mul(std::mem::size_of::<String>() + 1),
+        )
+        .saturating_add(seen_heap)
+        .saturating_add(workspace)
+        .saturating_add(64 * 1024)
+}
+fn stop_listing(node: &mut Node) {
+    node.complete = false;
+    if node.kind == Kind::Directory {
+        node.listing_complete = Some(false);
+    }
+}
+fn stop(result: &mut ScanResult, parent: usize, reason: LimitReason) {
+    result.limited = true;
+    result.limit_reason = Some(reason);
+    result.nodes[parent].complete = false;
+    if result.nodes[parent].kind == Kind::Directory {
+        result.nodes[parent].listing_complete = Some(false);
+    }
+}
+#[derive(Clone, Copy, Default)]
+struct Auxiliary {
+    seen: usize,
+    heap: usize,
+    workspace: usize,
+}
+/// Predict Vec growth and its old allocation surviving a realloc. Reserve fallibly
+/// only after the prediction fits; never create a temporary copy of the tree.
+fn admit(
+    nodes: &mut Vec<Node>,
+    stack: &mut Vec<usize>,
+    heap: usize,
+    child: &Node,
+    aux: Auxiliary,
+    next_aux: Auxiliary,
+    monitor: &mut crate::memory::Monitor,
+) -> Result<(), LimitReason> {
+    let node_cap = grown(nodes.capacity(), nodes.len()).ok_or(LimitReason::CapacityLimit)?;
+    let directory = child.kind == Kind::Directory && child.error.is_none();
+    let stack_cap = if directory {
+        grown(stack.capacity(), stack.len()).ok_or(LimitReason::CapacityLimit)?
+    } else {
+        stack.capacity()
+    };
+    let retained = estimate(
+        node_cap,
+        heap.saturating_add(node_heap(child)),
+        stack_cap,
+        next_aux.seen,
+        next_aux.heap,
+        next_aux.workspace,
+    );
+    let transient = retained
+        .saturating_add(if node_cap > nodes.capacity() {
+            bytes::<Node>(nodes.capacity())
+        } else {
+            0
+        })
+        .saturating_add(if stack_cap > stack.capacity() {
+            bytes::<usize>(stack.capacity())
+        } else {
+            0
+        });
+    let current = estimate(
+        nodes.capacity(),
+        heap,
+        stack.capacity(),
+        aux.seen,
+        aux.heap,
+        aux.workspace,
+    );
+    if let Some(reason) = monitor.check_growth(current as u64, transient as u64) {
+        return Err(reason);
+    }
+    nodes
+        .try_reserve_exact(node_cap - nodes.len())
+        .map_err(|_| LimitReason::MemoryLimit)?;
+    if directory {
+        stack
+            .try_reserve_exact(stack_cap - stack.len())
+            .map_err(|_| LimitReason::MemoryLimit)?;
+    }
+    Ok(())
+}
+
 pub fn scan(
     path: &Path,
     options: Options,
     cancel: &AtomicBool,
     progress: &Mutex<Progress>,
 ) -> ScanResult {
+    let mut monitor = crate::memory::Monitor::new(options.memory_mode, options.memory_limit, None);
     let absolute = if path.is_absolute() {
         path.to_owned()
     } else {
@@ -346,6 +498,7 @@ pub fn scan(
         limited: false,
         limit_reason: None,
         cross_filesystems: options.cross_filesystems,
+        memory: None,
         errors: 0,
         scope_identity: None,
         app_version: Some(env!("CARGO_PKG_VERSION").into()),
@@ -370,14 +523,29 @@ pub fn scan(
             result.errors += 1;
         }
     }
-    let mut memory_used = std::mem::size_of::<Node>()
-        + result.nodes[0].native_locator.len()
-        + result.nodes[0].locator.len() * 2;
+    let mut heap = node_heap(&result.nodes[0]).saturating_add(result_heap(&result));
+    if let Some(reason) =
+        monitor.check(estimate(result.nodes.capacity(), heap, stack.capacity(), 0, 0, 0) as u64)
+    {
+        stop(&mut result, 0, reason);
+        stack.clear();
+    }
+    if cancel.load(Ordering::Relaxed) {
+        result.cancelled = true;
+        result.limited = false;
+        result.limit_reason = None;
+    }
     let mut known_bytes = 0_u64;
     let mut published = Instant::now();
     'walk: while let Some(parent) = stack.pop() {
         if cancel.load(Ordering::Relaxed) {
             result.cancelled = true;
+            break;
+        }
+        if let Some(reason) =
+            monitor.check(estimate(result.nodes.capacity(), heap, stack.capacity(), 0, 0, 0) as u64)
+        {
+            stop(&mut result, parent, reason);
             break;
         }
         let parent_path = result.nodes[parent]
@@ -388,7 +556,9 @@ pub fn scan(
         let entries = match fs::read_dir(parent_path) {
             Ok(entries) => entries,
             Err(error) => {
+                let before = node_heap(&result.nodes[parent]);
                 fail(&mut result.nodes[parent], io_code(&error));
+                heap = heap.saturating_add(node_heap(&result.nodes[parent]).saturating_sub(before));
                 result.errors += 1;
                 continue;
             }
@@ -409,10 +579,21 @@ pub fn scan(
                 result.nodes[parent].listing_complete = Some(false);
                 break 'walk;
             }
+            if let Some(reason) =
+                monitor.check(
+                    estimate(result.nodes.capacity(), heap, stack.capacity(), 0, 0, 0) as u64,
+                )
+            {
+                stop(&mut result, parent, reason);
+                break 'walk;
+            }
             let path = match entry {
                 Ok(entry) => entry.path(),
                 Err(error) => {
+                    let before = node_heap(&result.nodes[parent]);
                     fail(&mut result.nodes[parent], io_code(&error));
+                    heap = heap
+                        .saturating_add(node_heap(&result.nodes[parent]).saturating_sub(before));
                     result.errors += 1;
                     continue;
                 }
@@ -433,19 +614,19 @@ pub fn scan(
                     result.errors += 1;
                 }
             }
-            memory_used = memory_used.saturating_add(
-                std::mem::size_of::<Node>()
-                    + child.native_locator.len()
-                    + child.locator.len() * 2
-                    + child.name.len(),
-            );
-            if memory_used > options.memory_limit {
-                result.limited = true;
-                result.limit_reason = Some(LimitReason::MemoryLimit);
-                result.nodes[parent].complete = false;
-                result.nodes[parent].listing_complete = Some(false);
+            if let Err(reason) = admit(
+                &mut result.nodes,
+                &mut stack,
+                heap,
+                &child,
+                Auxiliary::default(),
+                Auxiliary::default(),
+                &mut monitor,
+            ) {
+                stop(&mut result, parent, reason);
                 break 'walk;
             }
+            heap = heap.saturating_add(node_heap(&child));
             known_bytes = known_bytes.saturating_add(child.logical.known);
             let index = result.nodes.len();
             if child.kind == Kind::Directory && child.error.is_none() {
@@ -461,7 +642,21 @@ pub fn scan(
                 published = Instant::now();
             }
         }
+        if cancel.load(Ordering::Relaxed) {
+            result.cancelled = true;
+            stop_listing(&mut result.nodes[parent]);
+            break;
+        }
+        if let Some(reason) = monitor.check_pressure() {
+            stop(&mut result, parent, reason);
+            break;
+        }
     }
+    heap = result.nodes.iter().fold(result_heap(&result), |sum, n| {
+        sum.saturating_add(node_heap(n))
+    });
+    monitor.record(estimate(result.nodes.capacity(), heap, stack.capacity(), 0, 0, 0) as u64);
+    result.memory = Some(monitor.diagnostics.clone());
     finish(&mut result, started, progress);
     result
 }
@@ -500,6 +695,19 @@ fn finish(result: &mut ScanResult, started: Instant, progress: &Mutex<Progress>)
     };
 }
 
+/// Avoid allocating a lowercase copy for every comparison in wide directories.
+/// ASCII ordering agrees with Unicode lowercase ordering; other names retain
+/// the existing Unicode behavior.
+pub(crate) fn compare_names(a: &str, b: &str) -> std::cmp::Ordering {
+    if a.is_ascii() && b.is_ascii() {
+        a.bytes()
+            .map(|c| c.to_ascii_lowercase())
+            .cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
+    } else {
+        a.to_lowercase().cmp(&b.to_lowercase())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sort {
     Size,
@@ -514,6 +722,9 @@ impl ScanResult {
             Some(match self.limit_reason {
                 Some(LimitReason::NodeLimit) => "scan_node_limit",
                 Some(LimitReason::MemoryLimit) => "scan_memory_limit",
+                Some(LimitReason::MemoryPressure) => "scan_memory_pressure",
+                Some(LimitReason::ProcessMemoryLimit) => "scan_process_memory",
+                Some(LimitReason::CapacityLimit) => "scan_capacity_limit",
                 None => "scan_limited",
             })
         } else if self.nodes.first().is_some_and(|node| !node.complete) {
@@ -557,14 +768,8 @@ impl ScanResult {
         rows
     }
     pub(crate) fn sort(&self, rows: &mut [usize], sort: Sort) {
-        rows.sort_by(|a, b| {
-            let name = || {
-                self.nodes[*a]
-                    .name
-                    .to_lowercase()
-                    .cmp(&self.nodes[*b].name.to_lowercase())
-                    .then(a.cmp(b))
-            };
+        rows.sort_unstable_by(|a, b| {
+            let name = || compare_names(&self.nodes[*a].name, &self.nodes[*b].name).then(a.cmp(b));
             match sort {
                 Sort::Name => name(),
                 Sort::Size => self.nodes[*b]
@@ -607,7 +812,7 @@ impl ScanResult {
     }
     pub fn csv(&self) -> String {
         let mut out = String::from(
-            "schema_version,extension,file_count,known_logical_bytes,unknown_sizes,overflow\r\n",
+            "schema_version,extension,file_count,known_logical_bytes,unknown_sizes,overflow,cancelled,limited,limit_reason\r\n",
         );
         for (extension, count, size) in self.extensions() {
             // Quoted fields also prevent spreadsheet formula execution in extension names.
@@ -617,11 +822,22 @@ impl ScanResult {
                 extension
             };
             out.push_str(&format!(
-                "1,\"{}\",{count},{},{},{}\r\n",
+                "2,\"{}\",{count},{},{},{},{},{},{}\r\n",
                 safe.replace('"', "\"\""),
                 size.known,
                 size.unknown,
-                size.overflow
+                size.overflow,
+                self.cancelled,
+                self.limited,
+                self.limit_reason.map_or("", LimitReason::code)
+            ));
+        }
+        if self.nodes.iter().all(|n| n.kind != Kind::File) {
+            out.push_str(&format!(
+                "2,\"\",0,0,0,false,{},{},{}\r\n",
+                self.cancelled,
+                self.limited,
+                self.limit_reason.map_or("", LimitReason::code)
             ));
         }
         out
@@ -635,6 +851,10 @@ pub trait Storage: Send {
     fn open_directory(&mut self, locator: &str) -> Result<(), String>;
     fn next_entry(&mut self) -> Result<Option<Node>, String>;
     fn close_directory(&mut self);
+    /// Bounded native/page workspace retained outside the result tree.
+    fn memory_reserve(&self) -> usize {
+        0
+    }
     fn interrupt(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         None
     }
@@ -646,7 +866,22 @@ pub fn scan_storage(
     cancel: &AtomicBool,
     progress: &Mutex<Progress>,
 ) -> ScanResult {
+    let monitor = crate::memory::Monitor::new(
+        options.memory_mode,
+        options.memory_limit,
+        storage.interrupt(),
+    );
+    scan_storage_monitored(storage, options, cancel, progress, monitor)
+}
+fn scan_storage_monitored(
+    storage: &mut dyn Storage,
+    options: Options,
+    cancel: &AtomicBool,
+    progress: &Mutex<Progress>,
+    mut monitor: crate::memory::Monitor,
+) -> ScanResult {
     use std::collections::HashSet;
+    let workspace = storage.memory_reserve();
     let started = Instant::now();
     let mut root = storage.root();
     root.parent = None;
@@ -665,17 +900,31 @@ pub fn scan_storage(
         limited: false,
         limit_reason: None,
         cross_filesystems: false,
+        memory: None,
         errors: 0,
         scope_identity: Some(provider_identity(&root.native_locator)),
         app_version: Some(env!("CARGO_PKG_VERSION").into()),
         nodes: vec![root],
     };
     let mut stack = vec![0];
-    let mut memory = std::mem::size_of::<Node>() + result.scope.len() * 3;
-    if memory > options.memory_limit {
-        result.limited = true;
-        result.limit_reason = Some(LimitReason::MemoryLimit);
+    let mut heap = node_heap(&result.nodes[0]).saturating_add(result_heap(&result));
+    let mut seen_heap = result.nodes[0].locator.capacity().saturating_add(16);
+    if let Some(reason) = monitor.check(estimate(
+        result.nodes.capacity(),
+        heap,
+        stack.capacity(),
+        seen.capacity(),
+        seen_heap,
+        workspace,
+    ) as u64)
+    {
+        stop(&mut result, 0, reason);
         stack.clear();
+    }
+    if cancel.load(Ordering::Relaxed) {
+        result.cancelled = true;
+        result.limited = false;
+        result.limit_reason = None;
     }
     let mut known = 0_u64;
     let mut published = Instant::now();
@@ -684,12 +933,32 @@ pub fn scan_storage(
             result.cancelled = true;
             break;
         }
+        if let Some(reason) = monitor.check(estimate(
+            result.nodes.capacity(),
+            heap,
+            stack.capacity(),
+            seen.capacity(),
+            seen_heap,
+            workspace,
+        ) as u64)
+        {
+            stop(&mut result, parent, reason);
+            break;
+        }
         if let Err(error) = storage.open_directory(&result.nodes[parent].locator) {
+            if !cancel.load(Ordering::Relaxed)
+                && let Some(reason) = monitor.check_pressure()
+            {
+                stop(&mut result, parent, reason);
+                break;
+            }
             if error == "cancelled" || cancel.load(Ordering::Relaxed) {
                 result.cancelled = true;
                 break;
             }
+            let before = node_heap(&result.nodes[parent]);
             fail(&mut result.nodes[parent], error);
+            heap = heap.saturating_add(node_heap(&result.nodes[parent]).saturating_sub(before));
             result.errors += 1;
             storage.close_directory();
             continue;
@@ -699,7 +968,28 @@ pub fn scan_storage(
                 result.cancelled = true;
                 break 'walk;
             }
-            let mut child = match storage.next_entry() {
+            if let Some(reason) = monitor.check(estimate(
+                result.nodes.capacity(),
+                heap,
+                stack.capacity(),
+                seen.capacity(),
+                seen_heap,
+                workspace,
+            ) as u64)
+            {
+                stop(&mut result, parent, reason);
+                break 'walk;
+            }
+            let entry = storage.next_entry();
+            if cancel.load(Ordering::Relaxed) {
+                result.cancelled = true;
+                break 'walk;
+            }
+            if let Some(reason) = monitor.check_pressure() {
+                stop(&mut result, parent, reason);
+                break 'walk;
+            }
+            let mut child = match entry {
                 Ok(Some(child)) => child,
                 Ok(None) => {
                     result.nodes[parent].complete = true;
@@ -707,11 +997,20 @@ pub fn scan_storage(
                     break;
                 }
                 Err(error) => {
+                    if !cancel.load(Ordering::Relaxed)
+                        && let Some(reason) = monitor.check_pressure()
+                    {
+                        stop(&mut result, parent, reason);
+                        break 'walk;
+                    }
                     if error == "cancelled" || cancel.load(Ordering::Relaxed) {
                         result.cancelled = true;
                         break 'walk;
                     }
+                    let before = node_heap(&result.nodes[parent]);
                     fail(&mut result.nodes[parent], error);
+                    heap = heap
+                        .saturating_add(node_heap(&result.nodes[parent]).saturating_sub(before));
                     result.errors += 1;
                     break;
                 }
@@ -728,24 +1027,53 @@ pub fn scan_storage(
                 child.logical = Measure::default();
                 child.allocated = Measure::default();
                 child.complete = false;
-                if !seen.insert(child.locator.clone()) {
+                if seen.contains(&child.locator) {
                     fail(&mut child, "provider_cycle".into());
                 }
             } else if child.kind == Kind::Link {
                 child.logical = Measure::value(None);
                 child.allocated = Measure::value(None);
             }
-            memory = memory.saturating_add(
-                std::mem::size_of::<Node>()
-                    + child.name.len()
-                    + child.locator.len() * 2
-                    + child.native_locator.len(),
-            );
-            if memory > options.memory_limit {
-                result.limited = true;
-                result.limit_reason = Some(LimitReason::MemoryLimit);
+            let add_seen = child.kind == Kind::Directory && child.error.is_none();
+            let seen_cap = if add_seen && seen.len() == seen.capacity() {
+                seen.capacity().max(4).saturating_mul(2)
+            } else {
+                seen.capacity()
+            };
+            let next_seen_heap = seen_heap.saturating_add(if add_seen {
+                child.locator.capacity().saturating_add(16)
+            } else {
+                0
+            });
+            if let Err(reason) = admit(
+                &mut result.nodes,
+                &mut stack,
+                heap,
+                &child,
+                Auxiliary {
+                    seen: seen.capacity(),
+                    heap: seen_heap,
+                    workspace,
+                },
+                Auxiliary {
+                    seen: seen_cap,
+                    heap: next_seen_heap,
+                    workspace,
+                },
+                &mut monitor,
+            ) {
+                stop(&mut result, parent, reason);
                 break 'walk;
             }
+            if add_seen {
+                if seen.try_reserve(1).is_err() {
+                    stop(&mut result, parent, LimitReason::MemoryLimit);
+                    break 'walk;
+                }
+                seen.insert(child.locator.clone());
+                seen_heap = next_seen_heap;
+            }
+            heap = heap.saturating_add(node_heap(&child));
             if child.error.is_some() {
                 child.complete = false;
                 result.errors += 1;
@@ -768,6 +1096,18 @@ pub fn scan_storage(
         storage.close_directory();
     }
     storage.close_directory();
+    heap = result.nodes.iter().fold(result_heap(&result), |sum, n| {
+        sum.saturating_add(node_heap(n))
+    });
+    monitor.record(estimate(
+        result.nodes.capacity(),
+        heap,
+        stack.capacity(),
+        seen.capacity(),
+        seen_heap,
+        workspace,
+    ) as u64);
+    result.memory = Some(monitor.diagnostics.clone());
     finish(&mut result, started, progress);
     result
 }
@@ -952,4 +1292,296 @@ pub fn write_export(result: &ScanResult, destination: &Path, json: bool) -> std:
         let _ = fs::remove_file(temporary);
     }
     outcome
+}
+
+#[cfg(test)]
+pub(crate) mod memory_tests {
+    use super::*;
+    use crate::memory::{BudgetMode, Monitor, Snapshot};
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
+
+    /// Generates entries lazily: fixtures do not preallocate a second tree.
+    pub(crate) struct Generated {
+        pub count: usize,
+        next: usize,
+        pressure: Option<(usize, u64)>,
+        pub closed: usize,
+        interrupted: Arc<AtomicBool>,
+    }
+    impl Generated {
+        pub fn new(count: usize) -> Self {
+            Self {
+                count,
+                next: 0,
+                pressure: None,
+                closed: 0,
+                interrupted: Arc::new(AtomicBool::new(false)),
+            }
+        }
+    }
+    impl Storage for Generated {
+        fn root(&self) -> Node {
+            let mut n = node(PathBuf::from("/synthetic"), None);
+            n.kind = Kind::Directory;
+            n.path = None;
+            n
+        }
+        fn open_directory(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn next_entry(&mut self) -> Result<Option<Node>, String> {
+            if let Some((index, id)) = self.pressure
+                && self.next == index
+            {
+                crate::memory::pressure(id);
+                return Err("cancelled".into()); // Native cursor interruption, not user cancellation.
+            }
+            if self.next == self.count {
+                return Ok(None);
+            }
+            let mut n = node(
+                PathBuf::from(format!("/synthetic/item-{}", self.next)),
+                Some(0),
+            );
+            n.kind = Kind::File;
+            n.complete = true;
+            n.path = None;
+            // A missing size must remain unknown even in a limited result.
+            n.logical = Measure::value(if self.next.is_multiple_of(7) {
+                None
+            } else {
+                Some(10)
+            });
+            n.allocated = Measure::value(None);
+            self.next += 1;
+            Ok(Some(n))
+        }
+        fn close_directory(&mut self) {
+            self.closed += 1;
+        }
+        fn interrupt(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+            let interrupted = self.interrupted.clone();
+            Some(Arc::new(move || {
+                interrupted.store(true, Ordering::Relaxed);
+            }))
+        }
+    }
+    fn run(storage: &mut Generated, monitor: Monitor, cancel: bool) -> ScanResult {
+        scan_storage_monitored(
+            storage,
+            Options::default(),
+            &AtomicBool::new(cancel),
+            &Mutex::new(Progress::default()),
+            monitor,
+        )
+    }
+    #[test]
+    fn beyond_both_previous_object_caps_with_sufficient_budget() {
+        let mut storage = Generated::new(500_010);
+        let result = run(
+            &mut storage,
+            Monitor::simulated(BudgetMode::Manual { mib: 1024 }, Snapshot::default(), None),
+            false,
+        );
+        assert_eq!(result.nodes.len(), 500_011);
+        assert!(result.nodes[0].complete);
+        assert!(!result.limited);
+        assert!(storage.closed > 0);
+        assert!(result.memory.unwrap().estimated_scanner_bytes < 1024 * 1024 * 1024);
+    }
+    #[test]
+    fn estimated_budget_stops_before_growth_and_keeps_aggregates() {
+        let mut storage = Generated::new(100_000);
+        let result = run(
+            &mut storage,
+            Monitor::simulated(BudgetMode::Manual { mib: 16 }, Snapshot::default(), None),
+            false,
+        );
+        assert_eq!(result.limit_reason, Some(LimitReason::MemoryLimit));
+        assert!(result.nodes.len() > 1 && result.nodes.len() < 100_000);
+        assert!(!result.nodes[0].complete);
+        assert_eq!(result.nodes[0].listing_complete, Some(false));
+        assert_eq!(
+            result.nodes[0].logical.known,
+            result.nodes[1..]
+                .iter()
+                .map(|n| n.logical.known)
+                .sum::<u64>()
+        );
+        assert!(result.nodes[0].logical.unknown > 0);
+        assert!(storage.closed > 0);
+        assert!(result.memory.as_ref().unwrap().estimated_scanner_bytes <= 16 * 1024 * 1024);
+        assert_eq!(
+            serde_json::from_slice::<ScanResult>(&result.json().unwrap())
+                .unwrap()
+                .limit_reason,
+            result.limit_reason
+        );
+    }
+    #[test]
+    fn critical_callback_interrupts_cursor_and_is_distinct_from_cancel() {
+        let mut storage = Generated::new(100);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observer = calls.clone();
+        let monitor = Monitor::simulated(
+            BudgetMode::Manual { mib: 4096 },
+            Snapshot::default(),
+            Some(Arc::new(move || {
+                observer.fetch_add(1, Ordering::Relaxed);
+            })),
+        );
+        storage.pressure = Some((3, monitor.id()));
+        let result = run(&mut storage, monitor, false);
+        assert_eq!(result.limit_reason, Some(LimitReason::MemoryPressure));
+        assert!(!result.cancelled);
+        assert_eq!(result.nodes.len(), 4);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(storage.closed > 0);
+        assert!(!result.nodes[0].complete);
+        assert_eq!(result.nodes[0].logical.known, 20);
+        let cancelled = run(
+            &mut storage,
+            Monitor::simulated(
+                BudgetMode::Automatic,
+                Snapshot {
+                    critical: true,
+                    ..Default::default()
+                },
+                None,
+            ),
+            true,
+        );
+        assert!(cancelled.cancelled);
+        assert_eq!(cancelled.limit_reason, None);
+    }
+    #[test]
+    fn initial_pressure_and_arithmetic_boundaries() {
+        for a in ["A", "a", "file-123", "Ä", "日本語", "İ"] {
+            for b in ["a", "B", "file-19", "ä", "日本語", "i"] {
+                assert_eq!(compare_names(a, b), a.to_lowercase().cmp(&b.to_lowercase()));
+            }
+        }
+        assert_eq!(grown(usize::MAX, usize::MAX), None);
+        assert_eq!(bytes::<Node>(usize::MAX), usize::MAX);
+        assert_eq!(
+            estimate(
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                usize::MAX
+            ),
+            usize::MAX
+        );
+        let mut storage = Generated::new(100);
+        let result = run(
+            &mut storage,
+            Monitor::simulated(
+                BudgetMode::Automatic,
+                Snapshot {
+                    critical: true,
+                    ..Default::default()
+                },
+                None,
+            ),
+            false,
+        );
+        assert_eq!(result.nodes.len(), 1);
+        assert!(result.limited && !result.nodes[0].complete);
+        assert!(storage.closed > 0);
+        for reason in [
+            LimitReason::MemoryPressure,
+            LimitReason::ProcessMemoryLimit,
+            LimitReason::CapacityLimit,
+        ] {
+            let mut exported = result.clone();
+            exported.limit_reason = Some(reason);
+            let json = exported.json().unwrap();
+            assert_eq!(
+                serde_json::from_slice::<ScanResult>(&json)
+                    .unwrap()
+                    .limit_reason,
+                Some(reason)
+            );
+            assert!(exported.csv().contains(reason.code()));
+            let imported = crate::import::import_reader(
+                std::io::Cursor::new(json),
+                crate::import::Limits::DESKTOP,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+            );
+            assert!(imported.is_ok(), "{imported:?}");
+        }
+    }
+    #[test]
+    fn pressure_unblocks_native_io_and_old_callback_cannot_stop_next_scan() {
+        use std::sync::{Condvar, mpsc};
+        struct Blocking {
+            state: Arc<(Mutex<bool>, Condvar)>,
+            entered: mpsc::SyncSender<()>,
+            closed: Arc<AtomicBool>,
+        }
+        impl Storage for Blocking {
+            fn root(&self) -> Node {
+                Generated::new(0).root()
+            }
+            fn open_directory(&mut self, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+            fn next_entry(&mut self) -> Result<Option<Node>, String> {
+                self.entered.send(()).unwrap();
+                let (lock, wake) = &*self.state;
+                let mut stopped = lock.lock().unwrap();
+                while !*stopped {
+                    stopped = wake.wait(stopped).unwrap();
+                }
+                Err("cancelled".into())
+            }
+            fn close_directory(&mut self) {
+                self.closed.store(true, Ordering::Relaxed);
+            }
+            fn interrupt(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+                let state = self.state.clone();
+                Some(Arc::new(move || {
+                    let (lock, wake) = &*state;
+                    *lock.lock().unwrap() = true;
+                    wake.notify_all();
+                }))
+            }
+        }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut storage = Blocking {
+            state: Arc::new((Mutex::new(false), Condvar::new())),
+            entered: sender,
+            closed: Arc::new(AtomicBool::new(false)),
+        };
+        let closed = storage.closed.clone();
+        let previous = Monitor::simulated(BudgetMode::Automatic, Snapshot::default(), None);
+        let old_id = previous.id();
+        drop(previous);
+        let monitor = Monitor::simulated(
+            BudgetMode::Manual { mib: 4096 },
+            Snapshot::default(),
+            storage.interrupt(),
+        );
+        let id = monitor.id();
+        let worker = std::thread::spawn(move || {
+            scan_storage_monitored(
+                &mut storage,
+                Options::default(),
+                &AtomicBool::new(false),
+                &Mutex::new(Progress::default()),
+                monitor,
+            )
+        });
+        receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        crate::memory::pressure(old_id);
+        assert!(!closed.load(Ordering::Relaxed));
+        crate::memory::pressure(id);
+        let result = worker.join().unwrap();
+        assert_eq!(result.limit_reason, Some(LimitReason::MemoryPressure));
+        assert!(!result.cancelled);
+        assert!(closed.load(Ordering::Relaxed));
+    }
 }

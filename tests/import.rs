@@ -129,7 +129,7 @@ fn damaged_or_unsupported_documents_are_rejected_with_specific_errors() {
     let mut trailing = good.clone();
     trailing.extend_from_slice(b" []");
     assert_eq!(load(&trailing).unwrap_err(), ImportError::Malformed);
-    for version in [0, 3, 99] {
+    for version in [0, u64::from(scan::SCHEMA_VERSION) + 1, 99] {
         assert_eq!(
             rejected(|d| d["schema_version"] = json!(version), false),
             ImportError::UnsupportedVersion(version)
@@ -545,7 +545,7 @@ fn export_then_import_works_after_the_source_folder_is_gone() {
         &AtomicU64::new(0),
     )
     .unwrap();
-    assert_eq!(imported.schema_version, 2);
+    assert_eq!(imported.schema_version, scan::SCHEMA_VERSION);
     assert_eq!(imported.nodes[0].logical.known, 1234 + 77);
     assert!(
         imported.nodes.iter().all(|n| n.path.is_none()),
@@ -577,7 +577,7 @@ fn real_scans_record_identity_and_per_directory_listing_state() {
         &AtomicBool::new(false),
         &Mutex::new(Progress::default()),
     );
-    assert_eq!(scanned.schema_version, 2);
+    assert_eq!(scanned.schema_version, scan::SCHEMA_VERSION);
     let identity = scanned.scope_identity.as_ref().unwrap();
     assert_eq!(identity.root, scanned.nodes[0].native_locator);
     assert_eq!(identity.source, scan::SourceKind::Filesystem);

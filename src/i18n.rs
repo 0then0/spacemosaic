@@ -26,6 +26,34 @@ pub fn measure(language: usize, size: crate::scan::Measure) -> String {
     value
 }
 
+/// Explicitly separate a scanner estimate from a measured process value.
+pub fn memory_diagnostics(language: usize, d: &crate::memory::Diagnostics) -> String {
+    let process = |value: Option<u64>| {
+        value
+            .map(|v| bytes(language, v))
+            .unwrap_or_else(|| text(language, "unknown").into())
+    };
+    format!(
+        "{}: {} · {}: {} · {}: {} / {}",
+        text(language, "memory_budget"),
+        bytes(language, d.budget_bytes),
+        text(language, "memory_estimate"),
+        bytes(language, d.estimated_scanner_bytes),
+        text(
+            language,
+            if d.baseline_process_metric.or(d.last.process_metric)
+                == Some(crate::memory::ProcessMetric::PhysicalFootprint)
+            {
+                "memory_process_footprint"
+            } else {
+                "memory_process_rss"
+            }
+        ),
+        process(d.baseline_process_bytes),
+        process(d.last.process)
+    )
+}
+
 fn catalogs() -> &'static [BTreeMap<String, String>; 7] {
     static CATALOGS: OnceLock<[BTreeMap<String, String>; 7]> = OnceLock::new();
     CATALOGS.get_or_init(|| {

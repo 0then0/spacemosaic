@@ -14,6 +14,7 @@ pub(crate) struct Preferences {
     pub language: Option<String>,
     pub appearance: Appearance,
     pub window: Option<WindowState>,
+    pub scan_memory: crate::memory::BudgetMode,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -22,6 +23,7 @@ impl Default for Preferences {
             language: None,
             appearance: Appearance::System,
             window: None,
+            scan_memory: crate::memory::BudgetMode::Automatic,
         }
     }
 }
@@ -114,6 +116,9 @@ impl Preferences {
             }
             if value.window.is_some_and(|window| !window.valid()) {
                 value.window = None;
+            }
+            if !value.scan_memory.valid() {
+                value.scan_memory = crate::memory::BudgetMode::Automatic;
             }
             Some(value)
         };
@@ -245,6 +250,33 @@ pub(crate) mod tests {
         assert_eq!(loaded.language, None);
         assert_eq!(loaded.window, None);
         assert_eq!(loaded.appearance, Appearance::Dark);
+    }
+    #[test]
+    fn memory_mode_round_trip_and_legacy_defaults() {
+        use crate::memory::BudgetMode;
+        let files = Fixture::new();
+        for scan_memory in [
+            BudgetMode::Automatic,
+            BudgetMode::Manual { mib: 16 },
+            BudgetMode::Manual { mib: 4096 },
+        ] {
+            let settings = Preferences {
+                scan_memory,
+                ..Default::default()
+            };
+            settings.save(&files.path()).unwrap();
+            assert_eq!(Preferences::load(&files.path()), settings);
+        }
+        for source in [
+            r#"{"schema_version":1,"language":"ru"}"#,
+            r#"{"language":"ru","scan_memory":{"mode":"manual","mib":0}}"#,
+            r#"{"language":"ru","scan_memory":{"mode":"manual","mib":4097}}"#,
+        ] {
+            std::fs::write(files.path(), source).unwrap();
+            let loaded = Preferences::load(&files.path());
+            assert_eq!(loaded.scan_memory, BudgetMode::Automatic);
+            assert_eq!(loaded.language.as_deref(), Some("ru"));
+        }
     }
     #[test]
     fn write_failure_is_reported_and_does_not_overwrite_existing_settings() {

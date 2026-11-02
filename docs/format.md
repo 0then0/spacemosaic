@@ -1,8 +1,31 @@
 # Result format and import
 
-Exports are UTF-8 JSON documents describing one observed scope. SpaceMosaic 0.2
-writes **schema 2** and reads schema 1 and 2. Field names, enum values and
+Exports are UTF-8 JSON documents describing one observed scope. The current source
+writes **schema 3** and reads schemas 1, 2 and 3. Field names, enum values and
 numbers are machine-readable and independent of the display language.
+
+## Schema 3
+
+Schema 3 retains schema 2 tree/identity semantics and adds `memory_pressure`,
+`process_memory_limit` and `capacity_limit` to `limit_reason`, alongside legacy
+`node_limit` and `memory_limit`. `cancelled` remains separate. Schema 1/2 readers
+reject schema 3 rather than misinterpret a new reason. Opening and re-exporting
+an old result retains its original version and precision.
+
+Optional `memory` diagnostics record `budget_bytes`, `estimated_scanner_bytes`,
+`baseline_process_bytes`, `baseline_process_metric`, and the `last` platform
+snapshot. Snapshot fields are physical/available/process bytes,
+`process_metric` (`rss` or `physical_footprint`), process headroom, recommendation,
+group limit/headroom and `critical`. Unavailable readings are null. Diagnostics
+are informational, not evidence that the tree or the process fit a guaranteed
+safe limit; imports never apply the recorded policy to the current machine.
+
+CSV histogram exports now use **CSV schema 2**, independently of the JSON
+version. The original six columns remain in order; `cancelled`, `limited`, and
+`limit_reason` are appended on every row. A result with no observed files has
+one empty-extension, zero-count row so its stop reason is not lost. Consumers
+requiring exactly six columns must update. Unknown sizes/overflow and formula
+escaping retain their previous meaning. JSON is the full-tree interchange.
 
 ## Schema 2 (written since 0.2.0)
 
@@ -51,11 +74,10 @@ refuses, with a specific error code shown with a localized explanation:
 
 - files that are not regular files, or larger than the byte limit (1 GiB
   desktop, 128 MiB mobile);
-- more objects than the scanner limit (500,000 desktop, 100,000 mobile) or more
-  than the estimated metadata memory (256 MiB desktop, 64 MiB mobile, computed
-  exactly like the scanner's budget), checked while reading, so an endless or
+- more objects than the independent import limit (500,000 desktop, 100,000 mobile)
+  or the importer's estimated metadata memory (256 MiB desktop, 64 MiB mobile), checked while reading, so an endless or
   oversized document stops early;
-- `schema_version` outside 1..=2, unknown `kind`/`limit_reason`/`source` values,
+- `schema_version` outside 1..=3, unknown `kind`/`limit_reason`/`source` values,
   wrong types, missing members, duplicate members, trailing data, and
   documents nested beyond the parser's depth limit;
 - structure: node 0 must be the only root, every parent index must be smaller
@@ -85,3 +107,8 @@ picker copies the chosen document into app-private temporary storage, bounded
 by the same limit, and the copy is deleted after import.
 
 Exports are only written through the existing explicit export action.
+
+Scan budgets no longer mirror import limits. In particular, a scan exceeding the
+old object cap can be exported but cannot currently be reopened past the above
+import bounds. Changing untrusted import/comparison admission is outside this
+scan-memory change; the application does not claim unlimited round trips.

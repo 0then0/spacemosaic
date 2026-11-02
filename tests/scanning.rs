@@ -55,7 +55,7 @@ fn recursive_aggregation_filter_sort_and_export() {
     assert_eq!(groups[0].0, "txt");
     assert_eq!(groups[0].1, 2);
     let decoded: scan::ScanResult = serde_json::from_slice(&result.json().unwrap()).unwrap();
-    assert_eq!(decoded.schema_version, 2);
+    assert_eq!(decoded.schema_version, scan::SCHEMA_VERSION);
     assert_eq!(decoded.nodes[0].logical.known, 20);
     assert!(result.csv().contains("\"txt\",2,20,0,false"));
 }

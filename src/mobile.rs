@@ -45,6 +45,8 @@ impl WindowInsets {
 pub enum Command {
     Search(String),
     Rescan,
+    ScanFolder(usize),
+    Memory(crate::memory::BudgetMode),
     Cancel,
     Export(bool),
     Navigate(usize),
@@ -55,6 +57,13 @@ pub enum Command {
     Appearance(usize),
     Allocated(bool),
     OpenSaved,
+}
+fn memory_setting() -> &'static Mutex<crate::memory::BudgetMode> {
+    static SETTING: OnceLock<Mutex<crate::memory::BudgetMode>> = OnceLock::new();
+    SETTING.get_or_init(Mutex::default)
+}
+pub fn configure_memory(mode: crate::memory::BudgetMode) {
+    *memory_setting().lock().unwrap_or_else(|p| p.into_inner()) = mode;
 }
 fn commands() -> &'static Mutex<VecDeque<(u64, Command)>> {
     static VALUE: OnceLock<Mutex<VecDeque<(u64, Command)>>> = OnceLock::new();
@@ -162,7 +171,7 @@ fn enqueue(generation: u64, command: Command) -> bool {
     if queue.len() >= 8 {
         return false;
     }
-    let rescan = matches!(command, Command::Rescan);
+    let rescan = matches!(command, Command::Rescan | Command::ScanFolder(_));
     queue.push_back((generation, command));
     if rescan {
         let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
@@ -182,6 +191,10 @@ pub fn page(request: &str) -> String {
     let Ok(request) = serde_json::from_str::<Value>(request) else {
         return "{}".into();
     };
+    if request["command"] == "memory_setting" {
+        return serde_json::to_string(&*memory_setting().lock().unwrap_or_else(|p| p.into_inner()))
+            .unwrap_or_default();
+    }
     if let Some(command) = request["command"].as_str() {
         let generation = request["generation"]
             .as_u64()
@@ -196,6 +209,30 @@ pub fn page(request: &str) -> String {
         let command = match command {
             "search" => Command::Search(request["query"].as_str().unwrap_or("").to_owned()),
             "rescan" => Command::Rescan,
+            "memory_automatic" => Command::Memory(crate::memory::BudgetMode::Automatic),
+            "memory_manual" => {
+                let Some(mib) = request["mib"].as_u64().and_then(|v| u32::try_from(v).ok()) else {
+                    return json!({"accepted":false}).to_string();
+                };
+                let mode = crate::memory::BudgetMode::Manual { mib };
+                if !mode.valid() {
+                    return json!({"accepted":false}).to_string();
+                }
+                Command::Memory(mode)
+            }
+            "scan_folder" => {
+                let state = state().lock().unwrap_or_else(|p| p.into_inner());
+                if state.historical
+                    || !state
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.nodes.get(index))
+                        .is_some_and(|n| n.kind == scan::Kind::Directory)
+                {
+                    return json!({"accepted":false}).to_string();
+                }
+                Command::ScanFolder(index)
+            }
             "cancel" => Command::Cancel,
             "json" => Command::Export(true),
             "csv" => Command::Export(false),
@@ -392,6 +429,14 @@ fn result_page(
     response["allocated_available"] = json!(allocated_available);
     if mode == "changes" {
         response["summary"] = json!(changes_page(comparison, language, request).3);
+    }
+    if let Some(memory) = &result.memory {
+        let summary = response["summary"].as_str().unwrap_or_default();
+        response["summary"] = json!(format!(
+            "{} · {}",
+            summary,
+            crate::i18n::memory_diagnostics(language, memory)
+        ));
     }
     if let Some(reason) = result.incomplete_reason() {
         let summary = response["summary"].as_str().unwrap_or_default();
@@ -630,6 +675,7 @@ mod tests {
             cancelled: false,
             limited: false,
             limit_reason: None,
+            memory: None,
             cross_filesystems: false,
             errors: 0,
             scope_identity: None,
@@ -835,6 +881,49 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(receiver.try_recv().unwrap(), ExportOutcome::Cancelled);
         assert!(exports().lock().unwrap().is_none());
+    }
+    #[test]
+    fn native_memory_inputs_and_separate_scope_reject_invalid_and_stale_commands() {
+        let _session = bridge::SESSION_TEST_LOCK.lock().unwrap();
+        let generation = bridge::begin();
+        publish(generation, Arc::new(result(2)));
+        for mib in [0u64, 15, 4097, u64::MAX] {
+            assert_eq!(
+                serde_json::from_str::<Value>(&page(
+                    &json!({"command":"memory_manual","generation":generation,"mib":mib})
+                        .to_string()
+                ))
+                .unwrap()["accepted"],
+                false
+            );
+        }
+        page(&json!({"command":"memory_manual","generation":generation,"mib":128}).to_string());
+        assert!(matches!(
+            take_command(),
+            Some(Command::Memory(crate::memory::BudgetMode::Manual {
+                mib: 128
+            }))
+        ));
+        let denied =
+            page(&json!({"command":"scan_folder","generation":generation,"index":1}).to_string());
+        assert_eq!(
+            serde_json::from_str::<Value>(&denied).unwrap()["accepted"],
+            false
+        );
+        page(&json!({"command":"scan_folder","generation":generation,"index":0}).to_string());
+        assert!(matches!(take_command(), Some(Command::ScanFolder(0))));
+        let newer = bridge::begin();
+        publish_view(newer, Arc::new(result(2)), true, None);
+        let denied =
+            page(&json!({"command":"scan_folder","generation":newer,"index":0}).to_string());
+        assert_eq!(
+            serde_json::from_str::<Value>(&denied).unwrap()["accepted"],
+            false
+        );
+        assert_eq!(
+            page(&json!({"command":"memory_automatic","generation":generation}).to_string()),
+            "{}"
+        );
     }
     #[test]
     fn unavailable_allocation_preserves_known_sizes_in_native_results() {

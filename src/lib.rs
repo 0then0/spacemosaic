@@ -6,6 +6,7 @@ mod fonts;
 pub mod i18n;
 pub mod import;
 pub mod job;
+pub mod memory;
 pub mod mobile;
 #[cfg(feature = "gui")]
 mod preferences;

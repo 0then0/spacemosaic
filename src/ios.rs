@@ -124,3 +124,8 @@ pub unsafe extern "C" fn spacemosaic_open_done(
 pub extern "C" fn spacemosaic_export_done(id: u64, outcome: i32) {
     crate::mobile::export_complete(id, crate::mobile::ExportOutcome::code(outcome));
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spacemosaic_memory_pressure(id: u64) {
+    crate::memory::pressure(id);
+}

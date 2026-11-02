@@ -22,7 +22,7 @@
   "logical_bytes": "Tamanho lógico em bytes",
   "incomplete_directory": "A pasta não foi totalmente analisada. Seu tamanho total é desconhecido.",
   "scan_node_limit": "Análise interrompida: limite de objetos atingido. Algumas pastas não foram analisadas.",
-  "scan_memory_limit": "Análise interrompida: limite de memória para metadados atingido. Algumas pastas não foram analisadas.",
+  "scan_memory_limit": "Análise interrompida para preservar memória. Algumas pastas não foram analisadas.",
   "scan_limited": "Análise interrompida: limite de recursos atingido.",
   "scan_cancelled": "Análise cancelada. O resultado contém apenas os objetos já lidos.",
   "scan_incomplete": "Algumas pastas ou metadados não puderam ser lidos ou foram ignorados.",
@@ -226,5 +226,17 @@
   "cmp_limit_crossing": "As análises usaram configurações diferentes de limites do sistema de arquivos.",
   "cmp_limit_allocated": "O espaço alocado não foi medido nos dois resultados; apenas tamanhos lógicos são comparados.",
   "cmp_limit_older_schema": "Pelo menos um resultado usa o formato antigo; o estado de leitura de suas pastas é inferido com cautela.",
-  "cmp_limit_user_confirmed": "A correspondência das áreas foi confirmada por você, não pelos dados registrados."
+  "cmp_limit_user_confirmed": "A correspondência das áreas foi confirmada por você, não pelos dados registrados.",
+  "memory_settings": "Memória da análise",
+  "memory_automatic": "Automático",
+  "memory_manual": "Manual",
+  "memory_help": "O orçamento automático é escolhido no início conforme a memória do dispositivo e os limites disponíveis do sistema, com reservas para o sistema e outras tarefas. Manual: 16–4096 MiB para a memória estimada do analisador, não de todo o aplicativo. Ambos podem parar por falta de memória. O resultado parcial continua disponível; uma pasta selecionada pode ser analisada separadamente.",
+  "memory_budget": "Orçamento de análise escolhido",
+  "memory_estimate": "Memória estimada do analisador",
+  "memory_process_rss": "RSS do processo no início / última medição",
+  "memory_process_footprint": "Memória física do processo no início / última medição",
+  "scan_memory_pressure": "Análise interrompida: pressão crítica de memória. Os dados coletados estão disponíveis.",
+  "scan_process_memory": "Análise interrompida: o aumento de memória do processo excedeu a margem.",
+  "scan_capacity_limit": "Análise interrompida: não é possível ampliar as coleções com segurança.",
+  "memory_invalid": "Digite um inteiro de 16 a 4096 MiB."
 }

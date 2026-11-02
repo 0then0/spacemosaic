@@ -11,3 +11,5 @@ char *spacemosaic_result_page(const char *request);
 void spacemosaic_free_result(char *response);
 void spacemosaic_export_done(uint64_t id, int32_t outcome);
 void spacemosaic_open_done(uint64_t id, int32_t outcome, const char *path);
+
+void spacemosaic_memory_pressure(uint64_t scan_id);

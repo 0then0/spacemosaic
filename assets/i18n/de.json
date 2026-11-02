@@ -22,7 +22,7 @@
   "logical_bytes": "Logische Größe in Bytes",
   "incomplete_directory": "Der Ordner wurde nicht vollständig gescannt. Seine Gesamtgröße ist unbekannt.",
   "scan_node_limit": "Scan angehalten: Objektgrenze erreicht. Einige Ordner wurden nicht gescannt.",
-  "scan_memory_limit": "Scan angehalten: Speichergrenze für Metadaten erreicht. Einige Ordner wurden nicht gescannt.",
+  "scan_memory_limit": "Scan zum Schonen des Speichers gestoppt. Einige Ordner wurden nicht gescannt.",
   "scan_limited": "Scan angehalten: Ressourcengrenze erreicht.",
   "scan_cancelled": "Scan abgebrochen. Das Ergebnis enthält nur bereits gelesene Objekte.",
   "scan_incomplete": "Einige Ordner oder Metadaten konnten nicht gelesen werden oder wurden übersprungen.",
@@ -226,5 +226,17 @@
   "cmp_limit_crossing": "Die Scans verwendeten unterschiedliche Einstellungen für Dateisystemgrenzen.",
   "cmp_limit_allocated": "Belegter Speicher wurde nicht in beiden Ergebnissen gemessen; verglichen werden nur logische Größen.",
   "cmp_limit_older_schema": "Mindestens ein Ergebnis nutzt das ältere Format; der Listenstatus seiner Ordner wird vorsichtig abgeleitet.",
-  "cmp_limit_user_confirmed": "Die Übereinstimmung der Bereiche wurde von Ihnen bestätigt, nicht durch erfasste Daten."
+  "cmp_limit_user_confirmed": "Die Übereinstimmung der Bereiche wurde von Ihnen bestätigt, nicht durch erfasste Daten.",
+  "memory_settings": "Speicher für den Scan",
+  "memory_automatic": "Automatisch",
+  "memory_manual": "Manuell",
+  "memory_help": "Das automatische Budget wird beim Start anhand des Gerätespeichers und verfügbarer Systemgrenzen mit Reserven für System und App bestimmt. Manuell: 16–4096 MiB für geschätzte Scandaten, nicht den gesamten App-Speicher. Beide Modi können bei Speicherdruck vorzeitig stoppen. Teilergebnisse bleiben verfügbar; ausgewählte Ordner lassen sich separat scannen.",
+  "memory_budget": "Gewähltes Scanbudget",
+  "memory_estimate": "Geschätzter Scanspeicher",
+  "memory_process_rss": "Prozess-RSS bei Start / letzter Messung",
+  "memory_process_footprint": "Prozess-Footprint bei Start / letzter Messung",
+  "scan_memory_pressure": "Scan gestoppt: kritischer Speicherdruck. Erfasste Daten sind verfügbar.",
+  "scan_process_memory": "Scan gestoppt: Speicherzuwachs des Prozesses überschreitet den Spielraum.",
+  "scan_capacity_limit": "Scan gestoppt: Sammlungen können nicht sicher vergrößert werden.",
+  "memory_invalid": "Geben Sie eine ganze Zahl von 16 bis 4096 MiB ein."
 }

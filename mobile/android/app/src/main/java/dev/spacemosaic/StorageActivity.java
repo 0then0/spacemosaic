@@ -29,6 +29,23 @@ public final class StorageActivity extends NativeActivity {
     private static final int PAGE_SIZE = 32, MAX_BYTES = 256 * 1024;
     private static native boolean deliver(String json);
     private static native long begin();
+    private static native void memoryPressure(long scanId);
+    private final java.util.concurrent.atomic.AtomicLong memoryScan = new java.util.concurrent.atomic.AtomicLong();
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        // RUNNING_* notifications are no longer delivered starting with Android 14.
+        // UI_HIDDEN is a lifecycle event, not critical pressure.
+        if (level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+                || level >= android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
+            long id = memoryScan.get();
+            if (id != 0) memoryPressure(id);
+        }
+    }
+    @Override public void onLowMemory() {
+        super.onLowMemory();
+        long id = memoryScan.get();
+        if (id != 0) memoryPressure(id);
+    }
     private static native boolean isCurrent(long generation);
     private static native String resultPage(String request);
     private static native void exportDone(long id, int outcome);
@@ -225,11 +242,12 @@ public final class StorageActivity extends NativeActivity {
         Button button = new Button(viewContext()); button.setText(text(key)); button.setMinHeight((int)(48 * getResources().getDisplayMetrics().density));
         button.setOnClickListener(view -> action.run()); return button;
     }
+    private void resetBrowserNavigation() {
+        directory = 0; directories.clear(); offset = 0; offsets.clear(); mode = "directory";
+        browserQuery = ""; if (search != null) search.setText("");
+    }
     private void command(String name) {
-        if (name.equals("rescan")) {
-            directory = 0; directories.clear(); offset = 0; offsets.clear(); mode = "directory";
-            browserQuery = ""; if (search != null) search.setText("");
-        }
+        if (name.equals("rescan")) resetBrowserNavigation();
         browserRequest++;
         try { resultPage(new JSONObject().put("command", name).toString()); }
         catch (Exception ignored) { /* A later refresh still exposes the current result. */ }
@@ -241,6 +259,14 @@ public final class StorageActivity extends NativeActivity {
         LinearLayout actions = new LinearLayout(viewContext());
         actions.addView(button("choose", () -> pickTree(begin())));
         actions.addView(button("rescan", () -> command("rescan")));
+        if (!historical) actions.addView(button("scan_folder_separately", () -> {
+            try {
+                JSONObject response = new JSONObject(resultPage(new JSONObject().put("command","scan_folder")
+                    .put("index",directory).put("generation",lastPageGeneration).toString()));
+                if (!response.optBoolean("accepted")) return;
+                resetBrowserNavigation(); browserRequest++; refreshBrowser();
+            } catch (Exception ignored) { /* Preserve the current view if no scan was accepted. */ }
+        }));
         actions.addView(button("cancel", () -> command("cancel")));
         actions.addView(button("open_saved", () -> command("open_saved")));
         HorizontalScrollView actionScroll = new HorizontalScrollView(viewContext()); actionScroll.addView(actions); content.addView(actionScroll);
@@ -358,12 +384,36 @@ public final class StorageActivity extends NativeActivity {
     }
     private void settings() {
         new AlertDialog.Builder(viewContext()).setTitle(text("settings"))
-            .setItems(new String[]{text("appearance"), text("language")}, (dialog,which) -> {
+            .setItems(new String[]{text("appearance"), text("language"), text("memory_settings")}, (dialog,which) -> {
                 if (which == 0) new AlertDialog.Builder(viewContext()).setTitle(text("appearance"))
                     .setSingleChoiceItems(new String[]{text("system"),text("light"),text("dark")},appearance,(choice,index) -> { setting("appearance",index); choice.dismiss(); }).show();
-                else new AlertDialog.Builder(viewContext()).setTitle(text("language"))
+                else if (which == 1) new AlertDialog.Builder(viewContext()).setTitle(text("language"))
                     .setItems(new String[]{text("system"),"en","ru","es","de","fr","ja","pt-BR"},(choice,index) -> setting("language",index == 0 ? 7 : index-1)).show();
+                else memorySettings();
             }).show();
+    }
+    private void memorySettings() {
+        JSONObject current = new JSONObject();
+        try { current = new JSONObject(resultPage("{\"command\":\"memory_setting\"}")); } catch (Exception ignored) {}
+        final int value = current.optInt("mib", 64);
+        new AlertDialog.Builder(viewContext()).setTitle(text("memory_settings")).setMessage(text("memory_help"))
+            .setPositiveButton(text("memory_automatic"), (d,w) -> command("memory_automatic"))
+            .setNeutralButton(text("memory_manual"), (d,w) -> {
+                EditText input = new EditText(viewContext());
+                input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER); input.setText(Integer.toString(value));
+                AlertDialog dialog = new AlertDialog.Builder(viewContext()).setTitle(text("memory_manual") + " (MiB)")
+                    .setMessage(text("memory_help")).setView(input).setPositiveButton(text("memory_manual"), null)
+                    .setNegativeButton(text("close"),(a,b) -> {}).create();
+                dialog.setOnShowListener(a -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                    try {
+                        long mib = Long.parseLong(input.getText().toString());
+                        JSONObject response = new JSONObject(resultPage(new JSONObject().put("command","memory_manual").put("mib",mib).toString()));
+                        if (response.optBoolean("accepted")) { dialog.dismiss(); return; }
+                    } catch (Exception ignored) {}
+                    input.setError(text("memory_invalid"));
+                }));
+                dialog.show();
+            }).setNegativeButton(text("close"),(d,w) -> {}).show();
     }
     @Override public void onConfigurationChanged(android.content.res.Configuration configuration) {
         super.onConfigurationChanged(configuration);
@@ -502,6 +552,18 @@ public final class StorageActivity extends NativeActivity {
         try {
             JSONObject request = new JSONObject(encoded); String op = request.getString("op");
             long generation = request.optLong("generation"), scan = request.optLong("scan");
+            if (op.equals("memory_start")) { memoryScan.set(request.getLong("id")); return "{}"; }
+            if (op.equals("memory_stop")) { memoryScan.compareAndSet(request.getLong("id"), 0); return "{}"; }
+            if (op.equals("memory")) {
+                android.app.ActivityManager manager = (android.app.ActivityManager)getSystemService(ACTIVITY_SERVICE);
+                if (manager == null) return "{}";
+                android.app.ActivityManager.MemoryInfo info = new android.app.ActivityManager.MemoryInfo();
+                manager.getMemoryInfo(info);
+                return new JSONObject().put("physical", info.totalMem > 0 ? info.totalMem : JSONObject.NULL)
+                    .put("available", info.availMem >= 0 ? info.availMem : JSONObject.NULL)
+                    .put("critical", info.lowMemory || info.availMem <= info.threshold)
+                    .put("recommendation", (long)manager.getMemoryClass() * 1024 * 1024).toString();
+            }
             if (op.equals("cache")) return new JSONObject().put("path", new File(getCacheDir(),
                 "spacemosaic-export-" + request.getLong("id") + (request.getBoolean("json") ? ".json" : ".csv")).getAbsolutePath()).toString();
             if (op.equals("save")) {
