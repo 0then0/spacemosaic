@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.1 — 2026-11-05
+
+- Debounce search input for 200 ms and move filtering/sorting of large results to a bounded, cancellable worker.
+- Replace per-node child vectors with a compact tree adjacency index.
+- Separate navigation, tree, search and treemap state into UI modules.
+- Show loading state instead of stale results and update selection without restarting search.
+- Increase Android versionCode and iOS build to 10.
+
 ## v0.3.0 — 2026-11-02
 
 - Add persistent automatic and manual scan memory budgets using platform memory readings and pressure signals.
