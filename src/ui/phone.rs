@@ -36,10 +36,10 @@ impl ExplorerApp {
             self.mobile_busy = false;
             self.phone_home = true;
             self.notice = Some("cancelled");
-        } else if self.map_group.is_some() {
+        } else if self.map.group.is_some() {
             self.back();
             self.phone_view = PhoneView::Map;
-        } else if self.directory != 0 {
+        } else if self.navigation.directory != 0 {
             self.back();
         } else if !self.phone_home {
             self.phone_home = true;
@@ -51,10 +51,12 @@ impl ExplorerApp {
     /// Search and statistics cover the entire scan, while browsing and groups
     /// retain their directory scope. Use the same scope for labels and bars.
     pub(super) fn phone_scope(&self) -> usize {
-        if self.map_group.is_none() && (self.page != Page::Directory || !self.query.is_empty()) {
+        if self.map.group.is_none()
+            && (self.navigation.page != Page::Directory || !self.search.query.is_empty())
+        {
             0
         } else {
-            self.directory
+            self.navigation.directory
         }
     }
     pub(super) fn phone_button(ui: &mut egui::Ui, label: &str) -> bool {
@@ -195,7 +197,7 @@ impl ExplorerApp {
             ui.add(egui::Label::new(t(key)).truncate());
         }
         // One-line scrolling breadcrumbs without a second Back button.
-        if ui.ctx().content_rect().height() >= 500.0 && (scope != 0 || self.map_group.is_some()) {
+        if ui.ctx().content_rect().height() >= 500.0 && (scope != 0 || self.map.group.is_some()) {
             egui::ScrollArea::horizontal()
                 .id_salt("phone-path")
                 .min_scrolled_width(0.0)
@@ -209,7 +211,7 @@ impl ExplorerApp {
                             if index != 0 {
                                 ui.label("›");
                             }
-                            if index == scope && self.map_group.is_none() {
+                            if index == scope && self.map.group.is_none() {
                                 ui.label(RichText::new(&result.nodes[index].name).small());
                             } else if ui
                                 .add(egui::Button::new(&result.nodes[index].name).frame(false))
@@ -218,20 +220,20 @@ impl ExplorerApp {
                                 self.navigate(index);
                             }
                         }
-                        if self.map_group.is_some() {
+                        if self.map.group.is_some() {
                             ui.label("›");
                             ui.label(t("grouped_items"));
                         }
                     });
                 });
         }
-        if self.phone_view == PhoneView::List && self.page != Page::Extensions {
+        if self.phone_view == PhoneView::List && self.navigation.page != Page::Extensions {
             ui.horizontal(|ui| {
                 let width = (ui.available_width() - 56.0).max(1.0);
                 #[cfg(not(target_os = "android"))]
                 let response = ui.add_sized(
                     [width, 48.0],
-                    egui::TextEdit::singleline(&mut self.query).hint_text(t("search_hint")),
+                    egui::TextEdit::singleline(&mut self.search.query).hint_text(t("search_hint")),
                 );
                 #[cfg(not(target_os = "android"))]
                 response.widget_info(|| {
@@ -239,22 +241,23 @@ impl ExplorerApp {
                 });
                 #[cfg(not(target_os = "android"))]
                 if response.changed() {
+                    self.search.edited(Instant::now());
                     self.dirty = true;
                 }
                 #[cfg(target_os = "android")]
                 if ui
                     .add_sized(
                         [width, 48.0],
-                        egui::Button::new(if self.query.is_empty() {
+                        egui::Button::new(if self.search.query.is_empty() {
                             t("search_hint")
                         } else {
-                            &self.query
+                            &self.search.query
                         })
                         .truncate(),
                     )
                     .clicked()
                 {
-                    crate::android::search(&self.query);
+                    crate::android::search(&self.search.query);
                 }
                 if Self::phone_icon(ui, "⇅", t("phone_filter")) {
                     self.phone_overlay = Some(PhoneOverlay::Filter);
@@ -281,9 +284,9 @@ impl ExplorerApp {
                         {
                             self.phone_view = view;
                             if view == PhoneView::Map {
-                                self.map_group = None;
-                                if self.page == Page::Extensions {
-                                    self.page = Page::Directory;
+                                self.map.group = None;
+                                if self.navigation.page == Page::Extensions {
+                                    self.navigation.page = Page::Directory;
                                 }
                                 self.dirty = true;
                             }
@@ -295,8 +298,12 @@ impl ExplorerApp {
         let bounds = ui.available_rect_before_wrap();
         ui.scope_builder(egui::UiBuilder::new().max_rect(bounds), |ui| {
             ui.set_clip_rect(bounds.intersect(ui.clip_rect()));
-            if self.phone_view == PhoneView::List || self.map_group.is_some() {
-                if self.page == Page::Extensions {
+            if self.search.pending() {
+                ui.spinner();
+                return;
+            }
+            if self.phone_view == PhoneView::List || self.map.group.is_some() {
+                if self.navigation.page == Page::Extensions {
                     self.extension_table(ui);
                 } else {
                     self.phone_list(ui);
@@ -313,7 +320,7 @@ impl ExplorerApp {
         let t = |key| i18n::text(language, key);
         let row_height = (ui.text_style_height(&egui::TextStyle::Body) * 2.0 + 24.0).max(64.0);
         if self.rows.is_empty() {
-            ui.label(t(if result.nodes[self.directory].complete {
+            ui.label(t(if result.nodes[self.navigation.directory].complete {
                 "no_results"
             } else {
                 "incomplete_directory"
@@ -329,9 +336,9 @@ impl ExplorerApp {
         egui::ScrollArea::vertical()
             .id_salt((
                 "phone-files",
-                self.directory,
-                self.map_group.is_some(),
-                &self.query,
+                self.navigation.directory,
+                self.map.group.is_some(),
+                &self.search.query,
             ))
             .auto_shrink([false, false])
             .show_rows(ui, row_height, self.rows.len(), |ui, range| {
@@ -380,7 +387,7 @@ impl ExplorerApp {
                             ),
                         )
                     });
-                    if response.has_focus() || self.selected == Some(index) {
+                    if response.has_focus() || self.navigation.selected == Some(index) {
                         ui.painter().rect_stroke(
                             body,
                             4.0,
@@ -515,7 +522,7 @@ impl ExplorerApp {
                         self.phone_overlay = Some(PhoneOverlay::Filter);
                     }
                     if Self::phone_button(ui, t("phone_details")) {
-                        self.select(self.directory);
+                        self.select(self.navigation.directory);
                         self.phone_overlay = Some(PhoneOverlay::Details);
                     }
                     if Self::phone_button(ui, t("phone_scan_info")) {
@@ -606,12 +613,12 @@ impl ExplorerApp {
                         (Page::Extensions, "extensions"),
                     ] {
                         if Self::phone_button(ui, t(key)) {
-                            self.page = page;
-                            self.map_group = None;
+                            self.navigation.page = page;
+                            self.map.group = None;
                             self.dirty = true;
                             if page == Page::Extensions {
                                 self.phone_view = PhoneView::List;
-                                self.query.clear();
+                                self.search.clear();
                                 self.allocated = false;
                             }
                             self.phone_overlay = None;

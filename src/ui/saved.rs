@@ -120,16 +120,13 @@ impl ExplorerApp {
             self.allocated = false;
         }
         self.result = result;
-        self.selected = None;
-        self.directory = 0;
+        self.navigation.selected = None;
+        self.navigation.directory = 0;
         self.rows.clear();
-        self.children.clear();
-        self.children_sort = None;
-        self.tree_rows.clear();
-        self.expanded = HashSet::from([0]);
-        self.query.clear();
-        self.map_group = None;
-        self.page = Page::Directory;
+        self.tree = tree::TreeState::default();
+        self.search.clear();
+        self.map.group = None;
+        self.navigation.page = Page::Directory;
         self.phone_overlay = None;
         self.dirty = true;
         self.sync_native_result();

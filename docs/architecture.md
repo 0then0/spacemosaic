@@ -17,7 +17,10 @@ multi-crate framework.
 - `mobile`: paged result access, native commands, and asynchronous save handoff.
 - `i18n`: embedded catalogs, language negotiation, and display formatting.
 - `theme`: paired light/dark palettes and the system-theme preference.
-- `ui`: navigation, shared selection, controls, and rendering.
+- `ui`: application coordination and shared presentation helpers. `ui/app.rs`
+  handles scanning, preferences and the workspace; `navigation`, `tree`, `search`
+  and `treemap` own their respective state and operations. `phone` and `saved`
+  provide mobile and saved-result/comparison views.
 
 One scanner worker processes requests. At most one replacement request waits;
 submitting another cancels the active session and replaces the pending request.
@@ -41,9 +44,23 @@ continues to use the separate `cancelled` flag. These machine fields do not
 depend on the UI language.
 
 The UI caches filtered rows and map membership when navigation or filters
-change. It virtualizes the object list and paints at most 96 map rectangles;
-remaining positive-size objects expand through a grouped list. Zero/unknown
-weights have no invented rectangle area. Selection remains available in the
+change. Search input is debounced for 200 ms; clearing it skips the debounce.
+For results with at least 50,000 nodes, filtering and sorting
+(including the Largest page and grouped items) run on one lazy background
+worker. There is at most one active and one pending request. New input cancels
+the previous job immediately, and navigation/result replacement drops its
+response channel. Filtering and merge sorting check cancellation between
+bounded batches. Smaller results use the same filtering/sorting operation
+synchronously after the debounce. Pending requests show a loading indicator
+instead of rows or map tiles from the previous scope. Selecting an existing
+match updates the shared selection without rerunning its search.
+
+The tree index uses a contiguous edge array and an offset array, with no
+per-node Vec headers or per-directory allocations. On 64-bit targets, a tree
+with N nodes and N-1 edges needs 16N bytes for these arrays, excluding visible
+rows and expansion state. The UI virtualizes the object list and paints at
+most 96 map rectangles; remaining positive-size objects expand through a grouped
+list. Zero/unknown weights have no invented rectangle area. Selection remains available in the
 object list and details panel.
 
 ## Native storage access

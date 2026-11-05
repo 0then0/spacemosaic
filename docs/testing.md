@@ -46,7 +46,16 @@ sorting, JSON/CSV export, treemap geometry, hit regions, theme selection and
 contrast, translation-key completeness, tree expansion/selection, desktop
 tree/map placement, and pointer-based language selection. Regression checks
 exercise resizing, text scaling, scroll access to the map, persistent selection
-highlights, and nested/grouped selections. Phone regressions cover toolbar
+highlights, and nested/grouped selections. Search checks cover the 200 ms
+debounce, Unicode and locator matches, logical/allocated sorting across merge
+runs, superseded background requests, and navigation/result replacement during
+search, pending-state rendering on desktop/phone, and selection without
+restarting a completed search. The ignored `search_responsiveness_measurement`
+test reports synchronous search latency and background-search UI frame times
+on 600,000 synthetic files:
+`cargo test --release --locked --lib search_responsiveness_measurement -- --ignored --nocapture`.
+
+Phone regressions cover toolbar
 height and complete export menus, safe-area settings after rotation/text scaling,
 stable file-type columns during scrolling, and divider dragging in both themes.
 File-type header tests click all three columns in both directions, check stable
