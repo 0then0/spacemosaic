@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.2 — 2026-11-06
+
+- Reopen large JSON snapshots with a memory budget based on the device opening them.
+- Keep streaming validation, cancellation and support for JSON schemas 1–3.
+- Show import failures in the native mobile accessibility browsers and keep the current result open.
+
 ## v0.3.1 — 2026-11-05
 
 - Debounce search input for 200 ms and move filtering/sorting of large results to a bounded, cancellable worker.
