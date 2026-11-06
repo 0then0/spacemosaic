@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use spacemosaic::{
     compare::{self, Dimension, Status},
     import::{self, ImportError, Limits},
-    job,
+    job, memory,
     scan::{self, Options, Progress, ScanResult},
 };
 use std::{
@@ -372,10 +372,6 @@ fn aggregates_flags_and_locators_must_agree_with_the_measured_leaves() {
         )),
         "identity"
     );
-    // Unknown top-level members are skipped, not trusted.
-    let mut document = value(&sample(false));
-    document["added_by_a_future_minor_release"] = json!({"deep": [1, 2, {"x": null}]});
-    assert!(load(&serde_json::to_vec(&document).unwrap()).is_ok());
     // A child must lie under its parent's exact bytes.
     let mut b = Builder::fs("/data");
     let sub = b.dir(0, "sub");
@@ -390,7 +386,7 @@ fn aggregates_flags_and_locators_must_agree_with_the_measured_leaves() {
 }
 
 #[test]
-fn size_object_and_memory_budgets_are_enforced_while_streaming() {
+fn byte_and_memory_budgets_are_enforced_while_streaming() {
     let document = serde_json::to_vec(&value(&sample(false))).unwrap();
     let small = Limits {
         max_bytes: 200,
@@ -400,14 +396,6 @@ fn size_object_and_memory_budgets_are_enforced_while_streaming() {
         load_with(&document, small).unwrap_err(),
         ImportError::TooLarge { limit: 200 }
     );
-    let few = Limits {
-        max_nodes: 3,
-        ..Limits::DESKTOP
-    };
-    assert_eq!(
-        load_with(&document, few).unwrap_err(),
-        ImportError::TooManyObjects { limit: 3 }
-    );
     let tight = Limits {
         memory_limit: 100,
         ..Limits::DESKTOP
@@ -416,7 +404,7 @@ fn size_object_and_memory_budgets_are_enforced_while_streaming() {
         load_with(&document, tight).unwrap_err(),
         ImportError::MemoryLimit
     );
-    // An endless array of valid objects must stop at the object limit, not run forever.
+    // An endless array of valid objects runs out of memory budget before input bytes.
     struct Endless {
         head: Vec<u8>,
         node: Vec<u8>,
@@ -448,20 +436,15 @@ fn size_object_and_memory_budgets_are_enforced_while_streaming() {
         pos: 0,
     };
     let limits = Limits {
-        max_nodes: 5_000,
-        ..Limits::DESKTOP
+        max_bytes: MIB,
+        memory_limit: 128 * 1024,
     };
-    let error = import::import_reader(endless, limits, &AtomicBool::new(false), &AtomicU64::new(0))
-        .unwrap_err();
-    assert!(
-        matches!(
-            error,
-            ImportError::TooManyObjects { .. }
-                | ImportError::TooLarge { .. }
-                | ImportError::MemoryLimit
-        ),
-        "{error:?}"
+    let progress = AtomicU64::new(0);
+    assert_eq!(
+        import::import_reader(endless, limits, &AtomicBool::new(false), &progress).unwrap_err(),
+        ImportError::MemoryLimit
     );
+    assert!(progress.load(Ordering::Relaxed) < limits.max_bytes);
     assert!(started.elapsed() < Duration::from_secs(10));
     // An unbounded stream of whitespace is cut off by the byte budget.
     struct Spaces;
@@ -480,13 +463,60 @@ fn size_object_and_memory_budgets_are_enforced_while_streaming() {
             .unwrap_err(),
         ImportError::TooLarge { limit: 1 << 20 }
     );
-    // Deeply nested unknown members hit the parser's depth limit instead of the stack.
-    let mut deep = String::from(r#"{"schema_version":2,"x":"#);
-    deep.push_str(&"[".repeat(100_000));
-    assert_eq!(load(deep.as_bytes()).unwrap_err(), ImportError::Malformed);
     // Mobile budgets are stricter than desktop ones.
-    const { assert!(Limits::MOBILE.max_nodes < Limits::DESKTOP.max_nodes) };
+    const { assert!(Limits::MOBILE.max_bytes < Limits::DESKTOP.max_bytes) };
     const { assert!(Limits::MOBILE.memory_limit < Limits::DESKTOP.memory_limit) };
+}
+
+#[test]
+fn unknown_fields_are_skipped_within_the_nesting_limit() {
+    let mut document = value(&sample(false));
+    let delimiters = r#"\"[{"#.repeat(256);
+    document["future"] = json!({"items": [1, 2, {"text": delimiters}]});
+    assert!(load(&serde_json::to_vec(&document).unwrap()).is_ok());
+
+    let mut document = sample(false).json().unwrap();
+    assert_eq!(document.pop(), Some(b'}'));
+    document.extend_from_slice(br#", "future":"#);
+    document.extend(std::iter::repeat_n(b'[', 256));
+    document.extend_from_slice(b"null");
+    document.extend(std::iter::repeat_n(b']', 256));
+    document.push(b'}');
+    assert_eq!(load(&document).unwrap_err(), ImportError::Malformed);
+}
+
+#[test]
+fn an_oversized_string_runs_out_of_memory_budget_while_streaming() {
+    let limits = Limits {
+        max_bytes: 2 * MIB,
+        memory_limit: 512 * 1024,
+    };
+    let mut builder = Builder::fs("/data");
+    let name = r#"a "quote" and a \backslash.txt"#;
+    builder.file(0, name, 1);
+    let document = builder.build().json().unwrap();
+    // Split an escape across reader fills.
+    let escape = document.iter().position(|&byte| byte == b'\\').unwrap();
+    let (head, tail) = document.split_at(escape + 1);
+    let loaded = import::import_reader(
+        head.chain(tail),
+        limits,
+        &AtomicBool::new(false),
+        &AtomicU64::new(0),
+    )
+    .unwrap();
+    assert_eq!(loaded.nodes[1].name, name);
+
+    // The parser must stop before its scratch buffer grows past the budget.
+    let prefix = b"{\"schema_version\":3,\"scope\":\"";
+    let endless = prefix.as_slice().chain(std::io::repeat(b'x'));
+    let progress = AtomicU64::new(0);
+    assert_eq!(
+        import::import_reader(endless, limits, &AtomicBool::new(false), &progress).unwrap_err(),
+        ImportError::MemoryLimit
+    );
+    let read = progress.load(Ordering::Relaxed);
+    assert!(read > 0 && read < limits.memory_limit as u64);
 }
 
 #[test]
@@ -519,6 +549,109 @@ impl Folder {
 impl Drop for Folder {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+const LARGE_GROUPS: usize = 500;
+const FILES_PER_GROUP: usize = 1_000;
+const FILE_BYTES: u64 = 37;
+
+fn large_partial_snapshot() -> ScanResult {
+    let mut builder = Builder::fs("/synthetic");
+    for group in 0..LARGE_GROUPS {
+        let dir = builder.dir(0, &format!("group-{group}"));
+        for file in 0..FILES_PER_GROUP {
+            let suffix = if file.is_multiple_of(2) { "bin" } else { "txt" };
+            builder.file(dir, &format!("item-{file}.{suffix}"), FILE_BYTES);
+        }
+    }
+    let locked = builder.dir(0, "locked");
+    builder.deny(locked);
+    builder.abort_listing(0);
+    let mut result = builder.build();
+    result.schema_version = scan::SCHEMA_VERSION;
+    result.limited = true;
+    result.limit_reason = Some(scan::LimitReason::MemoryLimit);
+    result.memory = Some(memory::Diagnostics {
+        budget_bytes: 256 * MIB,
+        ..Default::default()
+    });
+    result
+}
+
+#[test]
+fn a_large_export_with_repeated_extensions_reopens_within_budget() {
+    let saved = Folder::new("large-round-trip");
+    let path = saved.0.join("large-partial.json");
+    scan::write_export(&large_partial_snapshot(), &path, true).unwrap();
+    let file_count = LARGE_GROUPS * FILES_PER_GROUP;
+    let cancel = AtomicBool::new(false);
+    let progress = AtomicU64::new(0);
+    let ample = Limits {
+        memory_limit: 256 * MIB as usize,
+        ..Limits::DESKTOP
+    };
+    let imported = import::import_file(&path, ample, &cancel, &progress).unwrap();
+    assert_eq!(imported.nodes.len(), file_count + LARGE_GROUPS + 2);
+    assert_eq!(imported.schema_version, scan::SCHEMA_VERSION);
+    let root = &imported.nodes[0];
+    for total in [root.logical, root.allocated] {
+        assert_eq!(total.known, file_count as u64 * FILE_BYTES);
+        assert_eq!(total.unknown, 1);
+        assert!(!total.overflow);
+    }
+    assert!(!root.complete);
+    assert_eq!(root.listing_complete, Some(false));
+    assert_eq!(imported.errors, 1);
+    assert_eq!(imported.incomplete_reason(), Some("scan_memory_limit"));
+    assert_eq!(imported.memory.as_ref().unwrap().budget_bytes, 256 * MIB);
+    let dirs = imported.children(0, "group-499", scan::Sort::Name);
+    assert_eq!(dirs.len(), 1);
+    let files = imported.children(dirs[0], "item-999.txt", scan::Sort::Name);
+    assert_eq!(files.len(), 1);
+    assert_eq!(imported.breadcrumbs(files[0]), [0, dirs[0], files[0]]);
+    assert!(imported.nodes[files[0]].path.is_none());
+    drop(imported);
+
+    let tight = Limits {
+        memory_limit: 32 * MIB as usize,
+        ..ample
+    };
+    progress.store(0, Ordering::Relaxed);
+    assert_eq!(
+        import::import_file(&path, tight, &cancel, &progress).unwrap_err(),
+        ImportError::MemoryLimit
+    );
+    let read = progress.load(Ordering::Relaxed);
+    assert!(read > 0 && read < fs::metadata(path).unwrap().len());
+}
+
+#[test]
+fn recorded_scan_budget_cannot_raise_the_local_import_limit() {
+    let mut builder = Builder::fs("/data");
+    for file in 0..2_048 {
+        builder.file(0, &format!("file-{file}"), 1);
+    }
+    let mut result = builder.build();
+    result.schema_version = scan::SCHEMA_VERSION;
+    let tight = Limits {
+        memory_limit: 256 * 1024,
+        ..Limits::DESKTOP
+    };
+    for budget_bytes in [1, u64::MAX] {
+        result.memory = Some(memory::Diagnostics {
+            budget_bytes,
+            ..Default::default()
+        });
+        let document = result.json().unwrap();
+        assert_eq!(
+            load_with(&document, tight).unwrap_err(),
+            ImportError::MemoryLimit
+        );
+        assert_eq!(
+            load(&document).unwrap().memory.unwrap().budget_bytes,
+            budget_bytes
+        );
     }
 }
 

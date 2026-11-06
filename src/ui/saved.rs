@@ -7,7 +7,7 @@ use crate::{
         self, ChangeSort, CompareError, Comparison, Dimension, Limitation, Reason, ScopeVerdict,
         Status,
     },
-    import::{ImportError, Limits},
+    import::ImportError,
     job,
 };
 
@@ -189,12 +189,14 @@ impl ExplorerApp {
     /// Start reading one chosen file. A newer request supersedes an older one: the
     /// older job is cancelled and can no longer deliver a result.
     pub(super) fn open_saved(&mut self, path: PathBuf, delete_after: bool) {
+        // Drop any queued result before the next worker samples available memory.
+        drop(self.open_job.take());
         self.open_error = None;
         self.open_name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        self.open_job = Some(job::open(path, Limits::platform(), delete_after));
+        self.open_job = Some(job::open_local(path, delete_after));
     }
     pub(super) fn close_saved(&mut self) {
         self.saved = None;
@@ -234,7 +236,7 @@ impl ExplorerApp {
                     self.set_displayed(saved);
                 }
                 Err(ImportError::Cancelled) => {}
-                Err(error) => self.open_error = Some(error),
+                Err(error) => self.show_open_error(error),
             }
         }
         if let Some(job) = &self.changes.job
@@ -270,15 +272,31 @@ impl ExplorerApp {
                 crate::mobile::OpenOutcome::Ready(path) => self.open_saved(path, true),
                 crate::mobile::OpenOutcome::Cancelled => {}
                 crate::mobile::OpenOutcome::TooLarge => {
-                    self.open_error = Some(ImportError::TooLarge {
-                        limit: Limits::platform().max_bytes,
+                    self.show_open_error(ImportError::TooLarge {
+                        limit: crate::import::Limits::platform().max_bytes,
                     });
                 }
                 crate::mobile::OpenOutcome::Failed => {
-                    self.open_error = Some(ImportError::Io(std::io::ErrorKind::Other));
+                    self.show_open_error(ImportError::Io(std::io::ErrorKind::Other));
                 }
             }
         }
+    }
+    fn show_open_error(&mut self, error: ImportError) {
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            let t = |key| i18n::text(self.language, key);
+            let message = format!(
+                "{}\n{}\n{}",
+                t("import_failed"),
+                t(error.key()),
+                error.detail()
+            );
+            let _ = crate::mobile::request(serde_json::json!({
+                "op": "saved_open_error", "message": message,
+            }));
+        }
+        self.open_error = Some(error);
     }
     fn operands(&self) -> Option<(Arc<ScanResult>, Arc<ScanResult>)> {
         let saved = self.saved.as_ref()?.result.clone();
@@ -1264,6 +1282,7 @@ impl ExplorerApp {
                 self.phone_overlay = Some(PhoneOverlay::ChangeFilter);
             }
         });
+        self.open_status(ui);
         let Some(comparison) = self.changes.comparison.clone() else {
             egui::ScrollArea::vertical()
                 .id_salt("phone-compare-setup")

@@ -1,4 +1,4 @@
-//! OS APIs run only on the scanner worker (callbacks only set a flag/interrupt).
+//! OS readings are taken on background workers. Scan callbacks only set a flag/interrupt.
 use super::Snapshot;
 
 #[cfg(any(target_os = "linux", target_os = "android", test))]
@@ -12,6 +12,10 @@ fn kib(source: &str, key: &str) -> Option<u64> {
 }
 #[cfg(any(target_os = "linux", test))]
 pub(super) fn linux_sample() -> Snapshot {
+    linux_sample_with_group_limits().0
+}
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn linux_sample_with_group_limits() -> (Snapshot, Option<u64>) {
     let info = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     let mut s = Snapshot {
@@ -32,25 +36,33 @@ pub(super) fn linux_sample() -> Snapshot {
         s.process_headroom = kib(&status, "VmSize:").map(|used| limit.saturating_sub(used));
     }
     // Resolve the actual controller mount and membership, including namespaces.
-    if let (Ok(groups), Ok(mounts)) = (
+    let unmeasured_group_limit = if let (Ok(groups), Ok(mounts)) = (
         std::fs::read_to_string("/proc/self/cgroup"),
         std::fs::read_to_string("/proc/self/mountinfo"),
     ) {
         apply_cgroups(&mut s, &groups, &mounts, |p| {
             std::fs::read_to_string(p).ok()
-        });
-    }
-    s
+        })
+    } else {
+        None
+    };
+    (s, unmeasured_group_limit)
 }
 #[cfg(target_os = "linux")]
 pub(super) use linux_sample as sample;
+#[cfg(target_os = "linux")]
+pub(super) use linux_sample_with_group_limits as sample_for_import;
+#[cfg(not(target_os = "linux"))]
+pub(super) fn sample_for_import() -> (Snapshot, Option<u64>) {
+    (sample(), None)
+}
 #[cfg(any(target_os = "linux", test))]
 fn apply_cgroups(
     s: &mut Snapshot,
     groups: &str,
     mounts: &str,
     read: impl Fn(&std::path::Path) -> Option<String>,
-) {
+) -> Option<u64> {
     use std::path::Path;
     fn decode(s: &str) -> String {
         s.replace("\\040", " ")
@@ -61,6 +73,7 @@ fn apply_cgroups(
     fn minimum(target: &mut Option<u64>, n: u64) {
         *target = Some(target.map_or(n, |v| v.min(n)));
     }
+    let mut unmeasured_limit = None;
     for line in mounts.lines() {
         let Some((left, right)) = line.split_once(" - ") else {
             continue;
@@ -119,6 +132,8 @@ fn apply_cgroups(
                         .and_then(|v| v.trim().parse::<u64>().ok());
                         if let Some(usage) = usage {
                             minimum(&mut s.group_headroom, limit.saturating_sub(usage));
+                        } else {
+                            minimum(&mut unmeasured_limit, limit);
                         }
                     }
                 }
@@ -128,6 +143,7 @@ fn apply_cgroups(
             }
         }
     }
+    unmeasured_limit
 }
 
 #[cfg(target_os = "macos")]
@@ -450,7 +466,7 @@ mod tests {
             assert_eq!(kib(s, "MemAvailable:"), None);
         }
         let mut s = Snapshot::default();
-        apply_cgroups(
+        let unmeasured = apply_cgroups(
             &mut s,
             "0::/a/b",
             "29 23 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup rw",
@@ -465,6 +481,7 @@ mod tests {
         );
         assert_eq!(s.group_limit, Some(1000));
         assert_eq!(s.group_headroom, Some(100));
+        assert_eq!(unmeasured, None);
         let mut s = Snapshot::default();
         apply_cgroups(
             &mut s,
@@ -477,5 +494,35 @@ mod tests {
             },
         );
         assert_eq!(s.group_headroom, Some(0));
+    }
+
+    #[test]
+    fn missing_ancestor_usage_still_limits_import() {
+        use crate::memory::{MIB, Platform, choose_import};
+
+        let mut s = Snapshot {
+            physical: Some(8 * 1024 * MIB),
+            available: Some(4 * 1024 * MIB),
+            ..Snapshot::default()
+        };
+        let unmeasured = apply_cgroups(
+            &mut s,
+            "0::/a/b",
+            "29 23 0:26 / /sys/fs/cgroup rw - cgroup2 cgroup rw",
+            |p| {
+                let mib = match p.to_str()?.replace('\\', "/").as_str() {
+                    "/sys/fs/cgroup/a/b/memory.max" => 2048,
+                    "/sys/fs/cgroup/a/b/memory.current" => 64,
+                    "/sys/fs/cgroup/a/memory.max" => 128,
+                    "/sys/fs/cgroup/memory.max" => 4096,
+                    _ => return None,
+                };
+                Some((mib * MIB).to_string())
+            },
+        );
+        assert_eq!(s.group_limit, Some(128 * MIB));
+        assert_eq!(s.group_headroom, Some(1984 * MIB));
+        assert_eq!(unmeasured, Some(128 * MIB));
+        assert_eq!(choose_import(Platform::Desktop, s, unmeasured), 8 * MIB);
     }
 }

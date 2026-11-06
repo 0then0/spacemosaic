@@ -11,6 +11,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.*;
 import org.json.JSONArray;
@@ -75,6 +76,7 @@ public final class StorageActivity extends NativeActivity {
     private JSONObject catalog = new JSONObject(), lastMessage;
     private LinearLayout browserRows;
     private AlertDialog browserDialog;
+    private TextView browserOpenError;
     private Button launcher;
     private EditText search;
     private long directory, parent;
@@ -270,6 +272,11 @@ public final class StorageActivity extends NativeActivity {
         actions.addView(button("cancel", () -> command("cancel")));
         actions.addView(button("open_saved", () -> command("open_saved")));
         HorizontalScrollView actionScroll = new HorizontalScrollView(viewContext()); actionScroll.addView(actions); content.addView(actionScroll);
+        browserOpenError = new TextView(viewContext());
+        browserOpenError.setTextSize(16);
+        browserOpenError.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        browserOpenError.setVisibility(View.GONE);
+        content.addView(browserOpenError);
         LinearLayout modes = new LinearLayout(viewContext());
         for (String key : new String[]{"directory", "largest", "extensions"}) {
             modes.addView(button(key, () -> { mode = key; offset = 0; offsets.clear(); refreshBrowser(); }));
@@ -302,7 +309,7 @@ public final class StorageActivity extends NativeActivity {
             }
             return false;
         });
-        browserDialog.setOnDismissListener(dialog -> { browserDialog = null; browserRows = null; search = null; browserRequest++; });
+        browserDialog.setOnDismissListener(dialog -> { browserDialog = null; browserRows = null; browserOpenError = null; search = null; browserRequest++; });
         browserDialog.show();
         browserDialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         refreshBrowser();
@@ -343,6 +350,11 @@ public final class StorageActivity extends NativeActivity {
         TextView label = new TextView(viewContext()); label.setText(value); label.setTextSize(16);
         int padding = (int)(10 * getResources().getDisplayMetrics().density);
         label.setPadding(padding, padding, padding, padding); browserRows.addView(label);
+    }
+    private void setBrowserOpenError(String message) {
+        if (browserOpenError == null) return;
+        browserOpenError.setVisibility(message.isEmpty() ? View.GONE : View.VISIBLE);
+        browserOpenError.setText(message);
     }
     private void renderPage(JSONObject page) {
         if (page.has("generation") && !isCurrent(page.optLong("generation"))) { handler.postDelayed(this::refreshBrowser, 100); return; }
@@ -585,6 +597,7 @@ public final class StorageActivity extends NativeActivity {
                 long id = request.getLong("id"), limit = request.getLong("limit");
                 runOnUiThread(() -> {
                     if (destroyed || openId != 0 || pickerOpen || exportSource != null) { openDone(id, 0, null); return; }
+                    setBrowserOpenError("");
                     openId = id; openLimit = limit;
                     Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
                         .putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json", "text/json", "text/plain", "application/octet-stream"});
@@ -592,6 +605,11 @@ public final class StorageActivity extends NativeActivity {
                     catch (RuntimeException error) { openId = 0; openDone(id, 0, null); }
                 });
                 return new JSONObject().put("accepted", true).toString();
+            }
+            if (op.equals("saved_open_error")) {
+                String message = request.getString("message");
+                runOnUiThread(() -> setBrowserOpenError(message));
+                return "{}";
             }
             if (op.equals("copy") || op.equals("view")) {
                 String locator = request.getString("locator");

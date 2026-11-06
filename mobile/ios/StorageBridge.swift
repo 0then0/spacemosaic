@@ -215,6 +215,10 @@ private final class NativeStorage {
             DispatchQueue.main.async { PickerBridge.shared.openSaved(id, limit: limit) }
             return ["accepted": true]
         }
+        if op == "saved_open_error", let message = request["message"] as? String {
+            DispatchQueue.main.async { PickerBridge.shared.reportOpenError(message) }
+            return [:]
+        }
         if op == "copy" || op == "view" {
             let locator = request["locator"] as? String ?? ""
             DispatchQueue.main.async {
@@ -384,11 +388,13 @@ private final class PickerBridge: NSObject, UIDocumentPickerDelegate {
     func openFinished() { openDelegate = nil }
     func openSaved(_ id: UInt64, limit: UInt64) {
         guard openDelegate == nil && exportDelegate == nil && picker == nil, let presenter = Self.presenter() else { spacemosaic_open_done(id, 0, nil); return }
+        browser?.setOpenError(nil)
         let delegate = OpenDelegate(id, limit: limit); openDelegate = delegate
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.json], asCopy: true)
         picker.allowsMultipleSelection = false; picker.delegate = delegate
         presenter.present(picker, animated: !UIAccessibility.isReduceMotionEnabled)
     }
+    func reportOpenError(_ message: String) { browser?.setOpenError(message) }
     func open(_ locator: String) {
         guard let root = nativeStorage.selectedURL(), let url = URL(string: locator),
             url.isFileURL, let presenter = Self.presenter() else { return }
@@ -431,6 +437,7 @@ private func rustPage(_ request: [String: Any]) -> [String: Any] {
 @MainActor
 private final class AccessibleBrowser: UITableViewController, UISearchResultsUpdating {
     private var page: [String: Any] = [:]
+    private var openError: String?
     private var directory = 0, offset = 0, mode = "directory", sort = "size"
     private var offsets: [Int] = [], directories: [Int] = []
     private var allocated = false
@@ -442,6 +449,16 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
         super.viewDidLoad(); tableView.rowHeight = UITableView.automaticDimension; tableView.estimatedRowHeight = 64
         search.obscuresBackgroundDuringPresentation = false; search.searchResultsUpdater = self
         navigationItem.searchController = search; configure(); reload()
+    }
+    func setOpenError(_ message: String?) {
+        guard openError != message else { return }
+        // The row persists even if the picker is still being dismissed.
+        openError = message
+        guard isViewLoaded else { return }
+        tableView.reloadRows(at: [IndexPath(row: 0, section: 0)], with: .none)
+        if let message = message, view.window != nil {
+            UIAccessibility.post(notification: .announcement, argument: message)
+        }
     }
     private func memorySettings() {
         let setting = rustPage(["command":"memory_setting"])
@@ -555,7 +572,8 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
                 var status = page["status"] as? String ?? "unavailable"
                 if status == "waiting" && PickerBridge.shared.pickerStatus != "ready" { status = PickerBridge.shared.pickerStatus }
                 cell.textLabel?.text = nativeText(status)
-                cell.detailTextLabel?.text = (page["summary"] as? String ?? "") + "\n" + nativeText("mobile_scope") + "\n" + nativeText("size_caveat")
+                let summary = (page["summary"] as? String ?? "") + "\n" + nativeText("mobile_scope") + "\n" + nativeText("size_caveat")
+                cell.detailTextLabel?.text = openError.map { $0 + "\n" + summary } ?? summary
             } else {
                 cell.textLabel?.text = page["name"] as? String ?? page["scope"] as? String ?? ""
                 if directory != 0 { cell.detailTextLabel?.text = nativeText("back"); cell.accessibilityTraits = .button }

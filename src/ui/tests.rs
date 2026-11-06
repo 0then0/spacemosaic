@@ -1785,6 +1785,48 @@ fn opening_saved_files_in_sequence_keeps_only_the_latest_and_bad_files_do_not_re
 }
 
 #[test]
+fn import_budget_failure_keeps_the_current_result_and_cleans_up_the_private_copy() {
+    use crate::import::{ImportError, Limits};
+
+    let files = preferences::tests::Fixture::new();
+    let path = files
+        .path()
+        .with_file_name("spacemosaic-import-budget.json");
+    let mut app = app_with_saved_and_live();
+    app.show(View::Saved);
+    app.navigate(1);
+    let displayed = app.result.clone().unwrap();
+    let live = app.live.clone().unwrap();
+    scan::write_export(&live, &path, true).unwrap();
+    app.open_job = Some(crate::job::open(
+        path.clone(),
+        Limits {
+            memory_limit: 1,
+            ..Limits::platform()
+        },
+        true,
+    ));
+
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let desktop = egui::vec2(1180.0, 900.0);
+    let output = settle(&mut app, &context, desktop);
+    assert_eq!(app.open_error, Some(ImportError::MemoryLimit));
+    assert_eq!(app.view, View::Saved);
+    assert!(Arc::ptr_eq(app.result.as_ref().unwrap(), &displayed));
+    assert!(Arc::ptr_eq(&app.saved.as_ref().unwrap().result, &displayed));
+    assert!(Arc::ptr_eq(app.live.as_ref().unwrap(), &live));
+    assert_eq!(app.navigation.directory, 1);
+    assert!(!path.exists());
+    let phone = frame_at(&mut app, &context, vec![], egui::vec2(360.0, 800.0));
+    let detail = ImportError::MemoryLimit.detail();
+    for rendered in [output, phone] {
+        assert!(rendered_texts(&rendered).contains(&detail));
+    }
+}
+
+#[test]
 fn phone_back_leaves_comparison_then_saved_result_without_losing_either() {
     let context = egui::Context::default();
     theme::install(&context);

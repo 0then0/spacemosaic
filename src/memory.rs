@@ -1,4 +1,4 @@
-//! Scan admission policy and bounded-cost monitoring. Values are heuristics, not OOM guarantees.
+//! Memory admission policy and bounded-cost scan monitoring. Values are heuristics, not OOM guarantees.
 //! Platform readings are optional and never substituted with zero on failure.
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -90,6 +90,15 @@ fn lower(value: &mut u64, bound: Option<u64>) {
         *value = (*value).min(bound);
     }
 }
+fn system_reserve(mobile: bool, physical: Option<u64>) -> u64 {
+    (if mobile { 256 * MIB } else { 512 * MIB }).max(physical.unwrap_or(0) / 16)
+}
+fn group_reserve(mobile: bool) -> u64 {
+    if mobile { 32 * MIB } else { 64 * MIB }
+}
+fn process_reserve(mobile: bool) -> u64 {
+    if mobile { 64 * MIB } else { 128 * MIB }
+}
 /// Additional scanner allocations. Explicit reserves cover other app work;
 /// division leaves room for indexes, sorting, allocator overhead and concurrency.
 pub fn choose(mode: BudgetMode, platform: Platform, readings: Snapshot) -> u64 {
@@ -102,23 +111,22 @@ pub fn choose(mode: BudgetMode, platform: Platform, readings: Snapshot) -> u64 {
             (p / if mobile { 32 } else { 16 }).min(if mobile { 128 * MIB } else { 2048 * MIB })
         })
         .unwrap_or(fallback);
-    let reserve = if mobile { 256 * MIB } else { 512 * MIB };
     lower(
         &mut auto,
         s.available.map(|a| {
-            a.saturating_sub(reserve.max(s.physical.unwrap_or(0) / 16)) / if mobile { 6 } else { 4 }
+            a.saturating_sub(system_reserve(mobile, s.physical)) / if mobile { 6 } else { 4 }
         }),
     );
     lower(&mut auto, s.group_limit.map(|l| l / 16));
     lower(
         &mut auto,
         s.group_headroom
-            .map(|a| a.saturating_sub(if mobile { 32 * MIB } else { 64 * MIB }) / 3),
+            .map(|a| a.saturating_sub(group_reserve(mobile)) / 3),
     );
     lower(
         &mut auto,
         s.process_headroom
-            .map(|a| a.saturating_sub(if mobile { 64 * MIB } else { 128 * MIB }) / 3),
+            .map(|a| a.saturating_sub(process_reserve(mobile)) / 3),
     );
     if platform == Platform::Android {
         lower(&mut auto, s.recommendation.map(|v| v / 4));
@@ -127,6 +135,73 @@ pub fn choose(mode: BudgetMode, platform: Platform, readings: Snapshot) -> u64 {
         BudgetMode::Manual { mib } if mode.valid() => u64::from(mib) * MIB,
         _ => auto,
     }
+}
+
+/// Additional allocations for parsing, validating and opening one saved result.
+pub(crate) fn import_budget() -> usize {
+    let (sample, unmeasured_group_limit) = platform::sample_for_import();
+    usize::try_from(choose_import(
+        Platform::current(),
+        sample,
+        unmeasured_group_limit,
+    ))
+    .unwrap_or(usize::MAX)
+}
+
+fn choose_import(
+    platform: Platform,
+    readings: Snapshot,
+    unmeasured_group_limit: Option<u64>,
+) -> u64 {
+    let s = readings.sanitized();
+    if s.critical {
+        return 0;
+    }
+    let mobile = platform.mobile();
+    let has_available =
+        s.available.is_some() || (platform == Platform::Ios && s.process_headroom.is_some());
+    let mut budget = if has_available {
+        s.physical
+            .map_or(u64::MAX, |p| p / if mobile { 16 } else { 8 })
+    } else {
+        let mut fallback = s
+            .physical
+            .map_or(if mobile { 64 * MIB } else { 256 * MIB }, |p| {
+                (p / if mobile { 32 } else { 16 }).min(if mobile { 128 * MIB } else { 512 * MIB })
+            });
+        if platform == Platform::Android {
+            lower(&mut fallback, s.recommendation.map(|v| v / 4));
+        }
+        // Keep a bounded process allowance for the old result, the import and
+        // the rest of the app when there is no measured remaining headroom.
+        let footprint = 2 * fallback;
+        fallback.min(footprint.saturating_sub(s.process.unwrap_or(0)))
+    };
+    // These readings already reflect allocations retained by the current view.
+    // A desktop process or group limit alone cannot establish available RAM.
+    let remaining = [
+        s.available
+            .map(|a| a.saturating_sub(system_reserve(mobile, s.physical))),
+        s.group_headroom
+            .map(|a| a.saturating_sub(group_reserve(mobile))),
+        s.process_headroom
+            .map(|a| a.saturating_sub(process_reserve(mobile))),
+    ]
+    .into_iter()
+    .flatten()
+    .min();
+    // The import estimate includes the validation and index peak, so a
+    // larger share can go to import than to scanner data alone.
+    lower(
+        &mut budget,
+        remaining.map(|a| a / if mobile { 3 } else { 2 }),
+    );
+    // Known headroom for one cgroup does not cover another cgroup whose
+    // usage could not be sampled. Windows job usage can also be unavailable.
+    let group_limit =
+        unmeasured_group_limit.or(s.group_limit.filter(|_| s.group_headroom.is_none()));
+    lower(&mut budget, group_limit.map(|l| l / 16));
+    budget
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -334,6 +409,94 @@ impl Drop for Monitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn import_uses_the_tightest_remaining_allowance() {
+        let s = Snapshot {
+            physical: Some(8 * 1024 * MIB),
+            available: Some(2 * 1024 * MIB),
+            ..Snapshot::default()
+        };
+        assert_eq!(choose_import(Platform::Desktop, s, None), 768 * MIB);
+        assert_eq!(
+            choose_import(
+                Platform::Desktop,
+                Snapshot {
+                    group_limit: Some(1200 * MIB),
+                    group_headroom: Some(1024 * MIB),
+                    process: Some(1024 * MIB),
+                    ..s
+                },
+                None,
+            ),
+            480 * MIB,
+            "remaining allowance already accounts for process memory"
+        );
+        assert_eq!(
+            choose_import(
+                Platform::Ios,
+                Snapshot {
+                    available: None,
+                    process_headroom: Some(1024 * MIB),
+                    ..s
+                },
+                None,
+            ),
+            320 * MIB
+        );
+        for s in [
+            Snapshot {
+                process_headroom: Some(0),
+                ..s
+            },
+            Snapshot {
+                critical: true,
+                ..s
+            },
+        ] {
+            assert_eq!(choose_import(Platform::Desktop, s, None), 0);
+        }
+    }
+
+    #[test]
+    fn import_fallback_limits_peak_with_existing_allocations() {
+        assert_eq!(
+            choose_import(Platform::Desktop, Snapshot::default(), None),
+            256 * MIB
+        );
+        assert_eq!(
+            choose_import(Platform::Android, Snapshot::default(), None),
+            64 * MIB
+        );
+        let s = Snapshot {
+            physical: Some(8 * 1024 * MIB),
+            ..Snapshot::default()
+        };
+        assert_eq!(choose_import(Platform::Desktop, s, None), 512 * MIB);
+        assert_eq!(
+            choose_import(
+                Platform::Desktop,
+                Snapshot {
+                    process_headroom: Some(4 * 1024 * MIB),
+                    ..s
+                },
+                None,
+            ),
+            512 * MIB,
+            "virtual address headroom alone cannot replace the fallback"
+        );
+        assert_eq!(
+            choose_import(
+                Platform::Desktop,
+                Snapshot {
+                    process: Some(768 * MIB),
+                    ..s
+                },
+                None,
+            ),
+            256 * MIB
+        );
+    }
+
     #[test]
     fn policy_inputs_and_overflow() {
         let s = Snapshot {

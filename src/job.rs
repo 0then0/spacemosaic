@@ -78,10 +78,24 @@ pub type CompareJob = Job<Result<Comparison, CompareError>>;
 /// access to the location it describes. `delete_after` removes an app-private
 /// copy made by a native document picker once the import has finished.
 pub fn open(path: PathBuf, limits: Limits, delete_after: bool) -> OpenJob {
+    open_with(path, move || limits, delete_after)
+}
+
+/// Sample local memory after the worker acquires the heavy-job lock so that
+/// allocations from a superseded import do not affect the next open.
+pub fn open_local(path: PathBuf, delete_after: bool) -> OpenJob {
+    open_with(path, Limits::for_device, delete_after)
+}
+
+fn open_with(
+    path: PathBuf,
+    limits: impl FnOnce() -> Limits + Send + 'static,
+    delete_after: bool,
+) -> OpenJob {
     let leftover = path.clone();
     Job::spawn(
         move |cancel, progress| {
-            let outcome = import::import_file(&path, limits, cancel, progress);
+            let outcome = import::import_file(&path, limits(), cancel, progress);
             if delete_after {
                 let _ = std::fs::remove_file(&path);
             }

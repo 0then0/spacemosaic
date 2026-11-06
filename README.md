@@ -117,10 +117,9 @@ Diagnostics separate chosen budget, estimated scanner data and measured process
 memory. This is a heuristic guard, not an OOM guarantee or a disk-backed tree.
 See [memory policy and platform sources](docs/memory.md).
 
-JSON exports stream to a temporary file before saving. Saved-file import still
-has independent defensive limits: desktop 500,000 objects / 256 MiB estimated
-metadata; mobile 100,000 / 64 MiB. A large new scan may therefore be exportable
-but too large to reopen with the current importer. Comparison retains two
+JSON exports stream to a temporary file before saving. Reopening a snapshot
+uses a memory budget chosen on the device that opens it, plus a separate file
+size limit of 1 GiB on desktop or 128 MiB on mobile. Comparison retains two
 results plus difference rows and indexes at once.
 
 ## Download

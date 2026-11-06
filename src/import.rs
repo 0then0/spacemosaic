@@ -1,13 +1,15 @@
 //! Bounded import of exported JSON results. The file is untrusted input: it is
-//! parsed as a stream, limited in size, object count and estimated memory, and
+//! parsed as a stream, limited in input bytes and estimated memory, and
 //! checked structurally before any view or comparison can use it. Nothing in it
 //! is ever used to open, reveal or rescan a location.
 use crate::scan::{Kind, LimitReason, Measure, Node, SCHEMA_VERSION, ScanResult, ScopeIdentity};
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use std::{
     cell::{Cell, RefCell},
+    ffi::OsStr,
     fmt, fs,
     io::{self, BufRead, Read},
+    mem::size_of,
     path::Path,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
@@ -21,24 +23,24 @@ const MAX_NATIVE_BYTES: usize = 128 * 1024;
 const MAX_CODE_BYTES: usize = 64;
 const UNIX_PREFIX: &str = "unix-bytes:";
 const WINDOWS_PREFIX: &str = "windows-utf16:";
+const READ_BUFFER_BYTES: usize = 64 * 1024;
+// Match serde_json's limit for fields it parses structurally.
+const MAX_JSON_DEPTH: usize = 127;
+const CACHED_EXTENSIONS: usize = 16;
 
-/// Independent defensive bounds for one untrusted import. Scans now have an
-/// adaptive budget and can produce a file larger than these import limits.
+/// Independent bounds on input bytes and estimated peak import allocations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub max_bytes: u64,
-    pub max_nodes: usize,
     pub memory_limit: usize,
 }
 impl Limits {
     pub const DESKTOP: Self = Self {
         max_bytes: 1024 * 1024 * 1024,
-        max_nodes: 500_000,
         memory_limit: 256 * 1024 * 1024,
     };
     pub const MOBILE: Self = Self {
         max_bytes: 128 * 1024 * 1024,
-        max_nodes: 100_000,
         memory_limit: 64 * 1024 * 1024,
     };
     pub const fn platform() -> Self {
@@ -46,6 +48,13 @@ impl Limits {
             Self::MOBILE
         } else {
             Self::DESKTOP
+        }
+    }
+
+    pub(crate) fn for_device() -> Self {
+        Self {
+            memory_limit: crate::memory::import_budget(),
+            ..Self::platform()
         }
     }
 }
@@ -56,9 +65,6 @@ pub enum ImportError {
     NotAFile,
     TooLarge {
         limit: u64,
-    },
-    TooManyObjects {
-        limit: usize,
     },
     MemoryLimit,
     UnsupportedVersion(u64),
@@ -75,9 +81,7 @@ impl ImportError {
     pub fn key(&self) -> &'static str {
         match self {
             Self::Io(_) | Self::NotAFile => "import_error_io",
-            Self::TooLarge { .. } | Self::TooManyObjects { .. } | Self::MemoryLimit => {
-                "import_error_too_large"
-            }
+            Self::TooLarge { .. } | Self::MemoryLimit => "import_error_too_large",
             Self::UnsupportedVersion(_) => "import_error_version",
             Self::Malformed | Self::InvalidValue => "import_error_malformed",
             Self::Invalid { .. } => "import_error_invalid",
@@ -89,8 +93,7 @@ impl ImportError {
             Self::Io(kind) => format!("io: {kind}"),
             Self::NotAFile => "not a regular file".into(),
             Self::TooLarge { limit } => format!("file larger than {limit} bytes"),
-            Self::TooManyObjects { limit } => format!("more than {limit} objects"),
-            Self::MemoryLimit => "estimated metadata memory limit exceeded".into(),
+            Self::MemoryLimit => "local import memory budget exceeded".into(),
             Self::UnsupportedVersion(version) => format!("schema_version {version}"),
             Self::Malformed => "not valid JSON".into(),
             Self::InvalidValue => "unexpected field type or unknown value".into(),
@@ -121,7 +124,10 @@ struct Context<'a> {
     cancel: &'a AtomicBool,
     limits: Limits,
     error: RefCell<Option<ImportError>>,
-    memory: Cell<usize>,
+    node_bytes: Cell<usize>,
+    result_peak: Cell<usize>,
+    metadata_bytes: Cell<usize>,
+    string_workspace: Cell<usize>,
 }
 impl Context<'_> {
     /// Remember the precise error; serde only carries a generic message.
@@ -129,13 +135,52 @@ impl Context<'_> {
         self.error.borrow_mut().get_or_insert(error);
         E::custom("import rejected")
     }
+
+    fn check_memory(&self, parsing: usize, result_peak: usize) -> Result<(), ImportError> {
+        let parse_peak = parsing
+            .saturating_add(READ_BUFFER_BYTES)
+            .saturating_add(self.string_workspace.get());
+        let peak = parse_peak
+            .max(result_peak)
+            .saturating_add(self.metadata_bytes.get());
+        if peak > self.limits.memory_limit {
+            return Err(ImportError::MemoryLimit);
+        }
+        Ok(())
+    }
+
+    fn keep_metadata<E: de::Error>(&self, bytes: usize) -> Result<(), E> {
+        self.metadata_bytes
+            .set(self.metadata_bytes.get().saturating_add(bytes));
+        self.check_memory(self.node_bytes.get(), self.result_peak.get())
+            .map_err(|error| self.fail(error))
+    }
 }
 
-fn node_cost(node: &Node) -> usize {
-    std::mem::size_of::<Node>()
-        + node.native_locator.len()
-        + node.locator.len() * 2
-        + node.name.len()
+fn text_bytes(capacity: usize) -> usize {
+    if capacity == 0 {
+        0
+    } else {
+        capacity.saturating_add(3 * size_of::<usize>())
+    }
+}
+
+/// Workspace allocated after parsing. Validation and UI setup run in separate
+/// phases. Extension strings can remain live when the directory index is built.
+fn opening_workspace(nodes: usize, extensions: usize, extension_bytes: usize) -> usize {
+    let validation = nodes.saturating_mul(2 * size_of::<Sum>() + size_of::<bool>());
+    let entry = size_of::<(String, u64, Measure)>();
+    // BTreeMap nodes, result entries, and temporary storage for stable sorting.
+    let group_extensions = extensions.saturating_mul(4 * entry);
+    // Adjacency, visible rows and stack, direct children, and grouped map items.
+    let build_index = nodes
+        .saturating_mul(12 * size_of::<usize>())
+        .saturating_add(extensions.saturating_mul(entry));
+    validation.max(
+        group_extensions
+            .max(build_index)
+            .saturating_add(extension_bytes),
+    )
 }
 
 fn valid_code(code: &str) -> bool {
@@ -260,6 +305,13 @@ impl<'de> Visitor<'de> for Nodes<'_> {
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<Node>, A::Error> {
         let context = self.0;
         let mut nodes: Vec<Node> = Vec::new();
+        let mut strings = 0usize;
+        // Empty extensions all share one entry. Other suffixes may each be unique.
+        let mut extensions = 1usize;
+        let mut extension_bytes = 0usize;
+        let mut cache: [Option<Box<OsStr>>; CACHED_EXTENSIONS] = Default::default();
+        let mut cached = 0;
+        let mut cache_bytes = 0usize;
         loop {
             if context.cancel.load(Ordering::Relaxed) {
                 return Err(context.fail(ImportError::Cancelled));
@@ -268,19 +320,79 @@ impl<'de> Visitor<'de> for Nodes<'_> {
                 break;
             };
             let index = nodes.len();
-            if index >= context.limits.max_nodes {
-                return Err(context.fail(ImportError::TooManyObjects {
-                    limit: context.limits.max_nodes,
-                }));
+            let old_capacity = nodes.capacity();
+            let grow = index == old_capacity;
+            let capacity = if grow {
+                old_capacity.saturating_mul(2).max(4)
+            } else {
+                old_capacity
+            };
+            strings = strings
+                .saturating_add(text_bytes(node.name.capacity()))
+                .saturating_add(text_bytes(node.locator.capacity()))
+                .saturating_add(text_bytes(node.native_locator.capacity()))
+                .saturating_add(text_bytes(node.error.as_ref().map_or(0, String::capacity)));
+            let mut cache_suffix = None;
+            if node.kind == Kind::File
+                && let Some(suffix) = Path::new(&node.name).extension()
+                && !suffix.is_empty()
+                && !cache[..cached]
+                    .iter()
+                    .flatten()
+                    .any(|known| &**known == suffix)
+            {
+                extensions = extensions.saturating_add(1);
+                // Lowercasing may expand Unicode, and the resulting String may grow.
+                extension_bytes =
+                    extension_bytes.saturating_add(text_bytes(suffix.len().saturating_mul(6)));
+                // Bound the cache itself and charge uncached suffixes conservatively.
+                if cached < cache.len() {
+                    cache_suffix = Some(suffix);
+                    cache_bytes = cache_bytes.saturating_add(text_bytes(suffix.len()));
+                }
             }
-            let memory = context.memory.get().saturating_add(node_cost(&node));
-            context.memory.set(memory);
-            if memory > context.limits.memory_limit {
-                return Err(context.fail(ImportError::MemoryLimit));
-            }
+            let retained = capacity
+                .saturating_mul(size_of::<Node>())
+                .saturating_add(strings);
+            let result_peak =
+                retained.saturating_add(opening_workspace(index + 1, extensions, extension_bytes));
+            // Reallocation can keep both buffers live. Unix locator validation
+            // can allocate decoded bytes and a lossy UTF-8 string before the push.
+            let transition = if grow {
+                old_capacity * size_of::<Node>()
+            } else {
+                0
+            };
+            let decoding = if encoding(&node.native_locator) == Encoding::Unix {
+                node.native_locator.len().min(MAX_NATIVE_BYTES) * 4
+            } else {
+                0
+            };
+            context
+                .check_memory(
+                    retained
+                        .saturating_add(cache_bytes)
+                        .saturating_add(transition.max(decoding)),
+                    result_peak,
+                )
+                .map_err(|error| context.fail(error))?;
             check_node(index, &node, &nodes).map_err(|error| context.fail(error))?;
+            if grow {
+                nodes
+                    .try_reserve_exact(capacity - index)
+                    .map_err(|_| context.fail(ImportError::MemoryLimit))?;
+            }
+            if let Some(suffix) = cache_suffix {
+                cache[cached] = Some(suffix.into());
+                cached += 1;
+            }
             nodes.push(node);
+            context.node_bytes.set(retained.saturating_add(cache_bytes));
+            context.result_peak.set(result_peak);
         }
+        context
+            .node_bytes
+            .set(context.node_bytes.get().saturating_sub(cache_bytes));
         Ok(nodes)
     }
 }
@@ -337,14 +449,33 @@ impl<'de> Visitor<'de> for Document<'_> {
                 }
                 "started_unix_seconds" => once!(started, map.next_value()?),
                 "elapsed_millis" => once!(elapsed, map.next_value()?),
-                "scope" => once!(scope, map.next_value()?),
+                "scope" => once!(scope, {
+                    let value: String = map.next_value()?;
+                    context.keep_metadata(text_bytes(value.capacity()))?;
+                    value
+                }),
                 "cancelled" => once!(cancelled, map.next_value()?),
                 "limited" => once!(limited, map.next_value()?),
                 "limit_reason" => once!(limit_reason, map.next_value()?),
                 "cross_filesystems" => once!(cross, map.next_value()?),
                 "errors" => once!(errors, map.next_value()?),
-                "scope_identity" => once!(identity, map.next_value()?),
-                "app_version" => once!(app_version, map.next_value()?),
+                "scope_identity" => once!(identity, {
+                    let value: Option<ScopeIdentity> = map.next_value()?;
+                    if let Some(identity) = &value {
+                        context.keep_metadata(
+                            text_bytes(identity.platform.capacity())
+                                .saturating_add(text_bytes(identity.root.capacity())),
+                        )?;
+                    }
+                    value
+                }),
+                "app_version" => once!(app_version, {
+                    let value: Option<String> = map.next_value()?;
+                    if let Some(version) = &value {
+                        context.keep_metadata(text_bytes(version.capacity()))?;
+                    }
+                    value
+                }),
                 "memory" => once!(memory, map.next_value()?),
                 "nodes" => once!(nodes, map.next_value_seed(Nodes(context))?),
                 _ => {
@@ -404,7 +535,7 @@ impl Sum {
 
 /// Relationship checks that need the complete tree. Aggregates are recomputed from
 /// the children and must agree; they are never accepted on trust.
-fn check_tree(result: &ScanResult) -> Result<(), ImportError> {
+fn check_tree(result: &ScanResult, cancel: &AtomicBool) -> Result<(), ImportError> {
     let nodes = &result.nodes;
     let Some(root) = nodes.first() else {
         return Err(ImportError::Invalid {
@@ -455,10 +586,13 @@ fn check_tree(result: &ScanResult) -> Result<(), ImportError> {
             node: None,
         });
     }
-    let mut logical = vec![Sum::default(); nodes.len()];
-    let mut allocated = vec![Sum::default(); nodes.len()];
-    let mut all_complete = vec![true; nodes.len()];
+    let mut logical = validation_buffer(nodes.len(), Sum::default())?;
+    let mut allocated = validation_buffer(nodes.len(), Sum::default())?;
+    let mut all_complete = validation_buffer(nodes.len(), true)?;
     for index in (0..nodes.len()).rev() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(ImportError::Cancelled);
+        }
         let node = &nodes[index];
         if encoding(&node.native_locator) != family {
             return Err(invalid("locator_family", index));
@@ -502,18 +636,78 @@ fn check_tree(result: &ScanResult) -> Result<(), ImportError> {
     Ok(())
 }
 
+fn validation_buffer<T: Clone>(len: usize, value: T) -> Result<Vec<T>, ImportError> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(len)
+        .map_err(|_| ImportError::MemoryLimit)?;
+    buffer.resize(len, value);
+    Ok(buffer)
+}
+
 struct Guard<'a, R> {
     inner: R,
-    cancel: &'a AtomicBool,
+    context: &'a Context<'a>,
     progress: &'a AtomicU64,
+    string_len: Option<usize>,
+    escaped: bool,
+    depth: usize,
 }
 impl<R: Read> Read for Guard<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if self.cancel.load(Ordering::Relaxed) {
+        let context = self.context;
+        if context.cancel.load(Ordering::Relaxed) {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
         }
         let count = self.inner.read(buffer)?;
         self.progress.fetch_add(count as u64, Ordering::Relaxed);
+        // serde_json grows a scratch buffer while reading strings, before the
+        // field limits can run. Bound it plus in-flight string copies using raw
+        // token lengths. Leave syntax and decoded lengths to the deserializer.
+        let mut workspace = context.string_workspace.get();
+        for &byte in &buffer[..count] {
+            match &mut self.string_len {
+                Some(len) if self.escaped => {
+                    *len += 1;
+                    self.escaped = false;
+                }
+                Some(len) if byte == b'"' => {
+                    workspace = workspace.max(len.saturating_mul(8));
+                    self.string_len = None;
+                }
+                Some(len) => {
+                    *len += 1;
+                    self.escaped = byte == b'\\';
+                }
+                None => match byte {
+                    b'"' => self.string_len = Some(0),
+                    b'[' | b'{' => {
+                        // IgnoredAny tracks nesting in serde_json's scratch Vec
+                        // without applying its normal recursive depth check.
+                        if self.depth == MAX_JSON_DEPTH {
+                            context
+                                .error
+                                .borrow_mut()
+                                .get_or_insert(ImportError::Malformed);
+                            return Err(io::ErrorKind::InvalidData.into());
+                        }
+                        self.depth += 1;
+                    }
+                    b']' | b'}' => self.depth = self.depth.saturating_sub(1),
+                    _ => {}
+                },
+            }
+        }
+        workspace = workspace.max(self.string_len.unwrap_or(0).saturating_mul(8));
+        if workspace > context.string_workspace.get() {
+            context.string_workspace.set(workspace);
+            if let Err(error) =
+                context.check_memory(context.node_bytes.get(), context.result_peak.get())
+            {
+                context.error.borrow_mut().get_or_insert(error);
+                return Err(io::ErrorKind::OutOfMemory.into());
+            }
+        }
         Ok(count)
     }
 }
@@ -555,32 +749,48 @@ pub fn import_reader(
     progress: &AtomicU64,
 ) -> Result<ScanResult, ImportError> {
     progress.store(0, Ordering::Relaxed);
-    // One byte beyond the limit distinguishes "too large" from "truncated".
-    let bounded = reader.take(limits.max_bytes.saturating_add(1));
-    let mut buffered = io::BufReader::with_capacity(
-        64 * 1024,
-        Guard {
-            inner: bounded,
-            cancel,
-            progress,
-        },
-    );
-    if buffered
-        .fill_buf()
-        .map_err(|error| io_error(error, cancel))?
-        .starts_with(&[0xEF, 0xBB, 0xBF])
-    {
-        buffered.consume(3);
+    if cancel.load(Ordering::Relaxed) {
+        return Err(ImportError::Cancelled);
     }
     let context = Context {
         cancel,
         limits,
         error: RefCell::new(None),
-        memory: Cell::new(0),
+        node_bytes: Cell::new(0),
+        result_peak: Cell::new(0),
+        metadata_bytes: Cell::new(0),
+        string_workspace: Cell::new(0),
     };
+    context.check_memory(0, 0)?;
+    // One byte beyond the limit distinguishes "too large" from "truncated".
+    let bounded = reader.take(limits.max_bytes.saturating_add(1));
+    let mut buffered = io::BufReader::with_capacity(
+        READ_BUFFER_BYTES,
+        Guard {
+            inner: bounded,
+            context: &context,
+            progress,
+            string_len: None,
+            escaped: false,
+            depth: 0,
+        },
+    );
+    if buffered
+        .fill_buf()
+        .map_err(|error| {
+            context
+                .error
+                .take()
+                .unwrap_or_else(|| io_error(error, cancel))
+        })?
+        .starts_with(&[0xEF, 0xBB, 0xBF])
+    {
+        buffered.consume(3);
+    }
     let mut deserializer = serde_json::Deserializer::from_reader(buffered);
     let parsed = Document(&context).deserialize(&mut deserializer);
     let outcome = parsed.and_then(|result| deserializer.end().map(|()| result));
+    drop(deserializer);
     let result = match outcome {
         Ok(result) => result,
         Err(error) => {
@@ -612,7 +822,7 @@ pub fn import_reader(
     if cancel.load(Ordering::Relaxed) {
         return Err(ImportError::Cancelled);
     }
-    check_tree(&result)?;
+    check_tree(&result, cancel)?;
     Ok(result)
 }
 

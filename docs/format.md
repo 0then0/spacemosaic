@@ -74,12 +74,13 @@ refuses, with a specific error code shown with a localized explanation:
 
 - files that are not regular files, or larger than the byte limit (1 GiB
   desktop, 128 MiB mobile);
-- more objects than the independent import limit (500,000 desktop, 100,000 mobile)
-  or the importer's estimated metadata memory (256 MiB desktop, 64 MiB mobile), checked while reading, so an endless or
-  oversized document stops early;
+- an estimated peak for parsed data, validation and opening indexes that
+  exceeds the local import memory budget. The importer checks it before growing
+  the result as it streams the file. The parser workspace allowance includes
+  the longest raw string token, including in fields the importer skips;
 - `schema_version` outside 1..=3, unknown `kind`/`limit_reason`/`source` values,
   wrong types, missing members, duplicate members, trailing data, and
-  documents nested beyond the parser's depth limit;
+  documents nested beyond 127 levels, including in skipped fields;
 - structure: node 0 must be the only root, every parent index must be smaller
   than the child's (no cycles, no forward references), and only directories may
   have children;
@@ -108,7 +109,10 @@ by the same limit, and the copy is deleted after import.
 
 Exports are only written through the existing explicit export action.
 
-Scan budgets no longer mirror import limits. In particular, a scan exceeding the
-old object cap can be exported but cannot currently be reopened past the above
-import bounds. Changing untrusted import/comparison admission is outside this
-scan-memory change; the application does not claim unlimited round trips.
+The import worker samples local memory when it starts. Measured headroom
+already accounts for an open result, and the worker keeps a reserve for other
+allocations. Where reliable headroom is unavailable, a bounded fallback uses
+physical RAM and current process usage when available. With neither reading,
+the fallback starts at 256 MiB on desktop or 64 MiB on mobile and other local
+limits can reduce it. The `memory` object in the file describes the source scan.
+The current result stays open if validation fails or the local budget runs out.

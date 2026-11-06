@@ -166,6 +166,7 @@ impl ExplorerApp {
             }
         });
         self.saved_banner_line(ui);
+        self.open_status(ui);
         let result = self.result.as_ref().unwrap();
         let node = &result.nodes[scope];
         let status = if result.cancelled || result.limited || !result.nodes[0].complete {
