@@ -557,9 +557,25 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
             }
         }
     }
+    /// Choice of Before and After for comparing two results; all state lives in Rust.
+    private var compareActions: [(title: String, command: String, index: Int, selected: Bool, enabled: Bool)] {
+        guard mode == "changes", let compare = page["compare"] as? [String: Any] else { return [] }
+        var list: [(String, String, Int, Bool, Bool)] = [
+            (nativeText("compare_open_before"), "open_before", 0, false, true),
+            (nativeText("compare_open_after"), "open_after", 0, false, true)]
+        if compare["can_swap"] as? Bool == true { list.append((nativeText("compare_swap"), "swap_direction", 0, false, true)) }
+        if compare["can_show_before"] as? Bool == true { list.append((nativeText("cmp_show_baseline"), "show_before", 0, false, true)) }
+        if compare["can_show_after"] as? Bool == true { list.append((nativeText("cmp_show_current"), "show_after", 0, false, true)) }
+        if compare["needs_confirmation"] as? Bool == true {
+            let on = compare["confirmed"] as? Bool == true
+            list.append((nativeText("compare_confirm_scope"), "confirm_scope", on ? 0 : 1, on, true))
+        }
+        list.append((nativeText("compare_start"), "start_compare", 0, false, compare["can_start"] as? Bool == true))
+        return list.map { (title: $0.0, command: $0.1, index: $0.2, selected: $0.3, enabled: $0.4) }
+    }
     override func numberOfSections(in tableView: UITableView) -> Int { 2 }
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        if section == 0 { return 2 }
+        if section == 0 { return 2 + compareActions.count }
         return entries.count + (offset > 0 ? 1 : 0) + ((page["has_more"] as? Bool == true) ? 1 : 0) + 1
     }
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -572,8 +588,14 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
                 var status = page["status"] as? String ?? "unavailable"
                 if status == "waiting" && PickerBridge.shared.pickerStatus != "ready" { status = PickerBridge.shared.pickerStatus }
                 cell.textLabel?.text = nativeText(status)
-                let summary = (page["summary"] as? String ?? "") + "\n" + nativeText("mobile_scope") + "\n" + nativeText("size_caveat")
+                var summary = (page["summary"] as? String ?? "") + "\n" + nativeText("mobile_scope") + "\n" + nativeText("size_caveat")
+                if mode == "changes", let lines = (page["compare"] as? [String: Any])?["lines"] as? [String] { summary += "\n" + lines.joined(separator: "\n") }
                 cell.detailTextLabel?.text = openError.map { $0 + "\n" + summary } ?? summary
+            } else if indexPath.row >= 2 {
+                let action = compareActions[indexPath.row - 2]
+                cell.textLabel?.text = action.title; cell.accessibilityTraits = action.enabled ? .button : [.button, .notEnabled]
+                cell.accessoryType = action.selected ? .checkmark : .none
+                cell.textLabel?.isEnabled = action.enabled
             } else {
                 cell.textLabel?.text = page["name"] as? String ?? page["scope"] as? String ?? ""
                 if directory != 0 { cell.detailTextLabel?.text = nativeText("back"); cell.accessibilityTraits = .button }
@@ -594,6 +616,13 @@ private final class AccessibleBrowser: UITableViewController, UISearchResultsUpd
     }
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: false)
+        if indexPath.section == 0 && indexPath.row >= 2 {
+            let action = compareActions[indexPath.row - 2]
+            guard action.enabled else { return }
+            _ = rustPage(["command": action.command, "index": action.index])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.reload() }
+            return
+        }
         if indexPath.section == 0 { if indexPath.row == 1, let parent = page["parent"] as? Int { navigate(directories.popLast() ?? parent, remember:false) }; return }
         if indexPath.row >= entries.count {
             let action = indexPath.row - entries.count

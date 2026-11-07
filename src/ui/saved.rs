@@ -1,11 +1,13 @@
 //! Saved results and change comparison. Opening a saved result reads only that
 //! file: nothing recorded in it can start a scan, open a location or reveal an
-//! object. Comparison is an explicit choice of baseline and current result.
+//! object. Comparison is an explicit choice of the result that is *Before* and
+//! the one that is *After*; either may be the current scan or one of two opened
+//! files.
 use super::*;
 use crate::{
     compare::{
         self, ChangeSort, CompareError, Comparison, Dimension, Limitation, Reason, ScopeVerdict,
-        Status,
+        Side, Status,
     },
     import::ImportError,
     job,
@@ -15,9 +17,17 @@ use crate::{
 pub(super) enum View {
     /// The result of a scan started in this session.
     Live,
-    /// A result opened from a file.
+    /// The first result opened from a file.
     Saved,
+    /// The second result opened from a file.
+    Second,
     Changes,
+}
+impl View {
+    /// The views that show a result opened from a file.
+    pub(super) fn is_snapshot(self) -> bool {
+        matches!(self, Self::Saved | Self::Second)
+    }
 }
 
 pub(super) struct SavedResult {
@@ -36,9 +46,23 @@ pub(super) enum CompareFailure {
     Other(&'static str),
 }
 
+/// Where an opened file goes. The slot is chosen when the file arrives, from
+/// what is open then, so a request made earlier cannot overwrite a newer choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OpenTarget {
+    /// Any free slot, otherwise the one on screen.
+    Auto,
+    /// The result for this side of the comparison; the other side is untouched.
+    Side(Side),
+    /// The file goes opposite `View` (the snapshot that was on screen), which
+    /// takes the other side; then the comparison screen is shown.
+    Compare(Side, View),
+}
+
 pub(super) struct Changes {
-    /// Baseline is the live scan and current is the saved result.
-    pub reversed: bool,
+    /// What the comparison starts from and what it ends at.
+    pub baseline: View,
+    pub current: View,
     pub confirm_scope: bool,
     pub comparison: Option<Arc<Comparison>>,
     pub job: Option<job::CompareJob>,
@@ -56,7 +80,8 @@ pub(super) struct Changes {
 impl Default for Changes {
     fn default() -> Self {
         Self {
-            reversed: false,
+            baseline: View::Saved,
+            current: View::Live,
             confirm_scope: false,
             comparison: None,
             job: None,
@@ -74,13 +99,27 @@ impl Default for Changes {
     }
 }
 impl Changes {
-    /// Forget any comparison; the operands changed or were closed.
+    /// Forget any comparison; the operands changed or were closed. The choice of
+    /// which result is Before and which is After is kept.
     pub fn clear(&mut self) {
-        let reversed = self.reversed;
+        let (baseline, current) = (self.baseline, self.current);
         *self = Self {
-            reversed,
+            baseline,
+            current,
             ..Self::default()
         };
+    }
+    fn operand(&self, side: Side) -> View {
+        match side {
+            Side::Baseline => self.baseline,
+            Side::Current => self.current,
+        }
+    }
+    fn set(&mut self, side: Side, view: View) {
+        match side {
+            Side::Baseline => self.baseline = view,
+            Side::Current => self.current = view,
+        }
     }
 }
 
@@ -92,12 +131,6 @@ struct RowLayout {
     height: f32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Side {
-    Baseline,
-    Current,
-}
-
 impl ExplorerApp {
     pub(super) fn dimension(&self) -> Dimension {
         if self.allocated {
@@ -106,8 +139,138 @@ impl ExplorerApp {
             Dimension::Logical
         }
     }
-    pub(super) fn has_baseline_and_current(&self) -> bool {
-        self.saved.is_some() && self.live.is_some()
+
+    // ----- Operands -----
+
+    pub(super) fn snapshot(&self, view: View) -> Option<&SavedResult> {
+        match view {
+            View::Saved => self.saved.as_ref(),
+            View::Second => self.second.as_ref(),
+            _ => None,
+        }
+    }
+    fn snapshot_slot(&mut self, view: View) -> &mut Option<SavedResult> {
+        match view {
+            View::Second => &mut self.second,
+            _ => &mut self.saved,
+        }
+    }
+    /// Whether any file is open, so the saved-result controls apply.
+    pub(super) fn has_snapshot(&self) -> bool {
+        self.saved.is_some() || self.second.is_some()
+    }
+    /// The result a view or comparison side stands for, when it exists now.
+    pub(super) fn operand(&self, view: View) -> Option<Arc<ScanResult>> {
+        match view {
+            View::Live => self.live.clone(),
+            View::Saved | View::Second => self.snapshot(view).map(|s| s.result.clone()),
+            View::Changes => None,
+        }
+    }
+    fn operand_name(&self, view: View) -> String {
+        match view {
+            View::Live => self
+                .live
+                .as_ref()
+                .map(|live| live.nodes[0].name.clone())
+                .unwrap_or_default(),
+            _ => self
+                .snapshot(view)
+                .map(|s| s.name.clone())
+                .unwrap_or_default(),
+        }
+    }
+    fn operands(&self) -> Option<(Arc<ScanResult>, Arc<ScanResult>)> {
+        let (baseline, current) = (self.changes.baseline, self.changes.current);
+        if baseline == current {
+            return None;
+        }
+        Some((self.operand(baseline)?, self.operand(current)?))
+    }
+    fn available_operands(&self) -> Vec<View> {
+        [View::Saved, View::Second, View::Live]
+            .into_iter()
+            .filter(|&view| self.operand(view).is_some())
+            .collect()
+    }
+    /// Keep the chosen Before and After if both still exist. Otherwise keep
+    /// whichever survives and fill the other; two opened files are then ordered by
+    /// capture time, earlier as Before. A choice is made only when the previous
+    /// one became impossible, and it is always shown and can be reversed.
+    pub(super) fn settle_operands(&mut self) {
+        let (baseline, current) = (self.changes.baseline, self.changes.current);
+        let present = self.available_operands();
+        let valid = |view: View| present.contains(&view);
+        if baseline != current && valid(baseline) && valid(current) {
+            return;
+        }
+        let spare = |keep: View| present.iter().copied().find(|&view| view != keep);
+        let captured = |view: View| self.snapshot(view).map(|s| s.result.started_unix_seconds);
+        let ordered = |first: View, second: View| {
+            if first.is_snapshot()
+                && second.is_snapshot()
+                && captured(second)
+                    .zip(captured(first))
+                    .is_some_and(|(b, a)| b < a)
+            {
+                (second, first)
+            } else {
+                (first, second)
+            }
+        };
+        let (baseline, current) = match (valid(baseline), valid(current)) {
+            (true, _) if spare(baseline).is_some() => {
+                ordered(baseline, spare(baseline).unwrap_or(current))
+            }
+            (_, true) if spare(current).is_some() => {
+                ordered(spare(current).unwrap_or(baseline), current)
+            }
+            _ => match (self.saved.is_some(), self.second.is_some()) {
+                (true, true) => ordered(View::Saved, View::Second),
+                (true, false) => (View::Saved, View::Live),
+                (false, true) => (View::Second, View::Live),
+                (false, false) => (baseline, current),
+            },
+        };
+        self.changes.baseline = baseline;
+        self.changes.current = current;
+        self.changes.clear();
+    }
+    /// Estimated bytes the session retains: every distinct open result, the
+    /// indexes over the one on screen and any finished comparison. Memory work on
+    /// saved results is admitted against this together with the new allocation.
+    pub(super) fn held_bytes(&self) -> usize {
+        let mut seen: Vec<*const ScanResult> = Vec::new();
+        let mut total = 0_usize;
+        for result in [
+            self.live.as_ref(),
+            self.saved.as_ref().map(|s| &s.result),
+            self.second.as_ref().map(|s| &s.result),
+            self.result.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let identity = Arc::as_ptr(result);
+            if !seen.contains(&identity) {
+                seen.push(identity);
+                total = total.saturating_add(result.retained_bytes());
+            }
+        }
+        if let Some(result) = &self.result {
+            total = total.saturating_add(crate::import::index_bytes(result.nodes.len()));
+        }
+        if let Some(comparison) = &self.changes.comparison {
+            total = total.saturating_add(comparison.retained_bytes());
+        }
+        total
+    }
+    /// The current scan was discarded or is being replaced. Only a comparison
+    /// that used it is forgotten; one between two opened files stays valid.
+    pub(super) fn live_changed(&mut self) {
+        if self.changes.baseline == View::Live || self.changes.current == View::Live {
+            self.changes.clear();
+        }
     }
     /// Replace the browsed result and reset navigation, as a new scan does.
     pub(super) fn set_displayed(&mut self, result: Option<Arc<ScanResult>>) {
@@ -141,8 +304,8 @@ impl ExplorerApp {
                 let live = self.live.clone();
                 self.set_displayed(live);
             }
-            View::Saved => {
-                let saved = self.saved.as_ref().map(|s| s.result.clone());
+            View::Saved | View::Second => {
+                let saved = self.operand(view);
                 self.set_displayed(saved);
             }
             View::Changes => self.sync_native_result(),
@@ -153,33 +316,107 @@ impl ExplorerApp {
     /// snapshot so native actions never use its recorded locations.
     pub(super) fn sync_native_result(&self) {
         #[cfg(any(target_os = "android", target_os = "ios"))]
-        if let Some(result) = &self.result {
-            crate::mobile::publish_view(
-                bridge::generation(),
-                result.clone(),
-                self.shows_saved_result(),
-                self.changes.comparison.clone(),
-            );
-        } else {
-            crate::mobile::clear_view(bridge::generation());
+        {
+            if let Some(result) = &self.result {
+                crate::mobile::publish_view(
+                    bridge::generation(),
+                    result.clone(),
+                    self.shows_saved_result(),
+                    self.changes.comparison.clone(),
+                );
+            } else {
+                crate::mobile::clear_view(bridge::generation());
+            }
+            crate::mobile::publish_setup(bridge::generation(), self.native_setup());
+        }
+    }
+    /// The facts the native comparison page shows about the chosen Before and After.
+    #[cfg(any(target_os = "android", target_os = "ios", test))]
+    pub(super) fn native_setup(&self) -> crate::mobile::Setup {
+        use crate::mobile::{Setup, SetupFailure, SetupOperand};
+        let operand = |view: View| {
+            self.operand(view).map(|result| SetupOperand {
+                name: self.operand_name(view),
+                live: view == View::Live,
+                captured: result.started_unix_seconds,
+                objects: result.nodes.len() as u64,
+                partial: compare::is_partial(&result),
+            })
+        };
+        Setup {
+            before: operand(self.changes.baseline),
+            after: operand(self.changes.current),
+            assessment: self
+                .operands()
+                .map(|(baseline, current)| compare::assess_scope(&baseline, &current)),
+            confirmed: self.changes.confirm_scope,
+            comparing: self.changes.job.is_some(),
+            opening: self.open_job.is_some(),
+            failure: self.changes.failure.as_ref().map(|failure| match failure {
+                CompareFailure::Incompatible(scope) => SetupFailure::Incompatible(scope.clone()),
+                CompareFailure::Other(key) => SetupFailure::Other(key),
+            }),
+            finished: self.changes.comparison.is_some(),
+        }
+    }
+    /// Run a command from the native comparison page.
+    #[cfg(any(target_os = "android", target_os = "ios", test))]
+    pub(super) fn native_compare_command(&mut self, command: crate::mobile::Command) {
+        use crate::mobile::Command;
+        match command {
+            Command::OpenFor(side) if self.open_job.is_none() => {
+                self.open_saved_dialog_as(OpenTarget::Side(side));
+            }
+            Command::SwapDirection => self.swap_direction(),
+            Command::ConfirmScope(confirmed) => {
+                self.changes.confirm_scope = confirmed;
+                self.sync_native_result();
+            }
+            Command::StartCompare
+                if self.changes.job.is_none()
+                    && self.open_job.is_none()
+                    && self.changes.comparison.is_none() =>
+            {
+                self.start_compare();
+            }
+            Command::ShowSide(side) => {
+                let view = self.side_view(side);
+                if self.operand(view).is_some() {
+                    self.show(view);
+                    if self.view == View::Changes {
+                        self.view = view;
+                    }
+                }
+            }
+            _ => {}
         }
     }
     /// Whether the browsed result came from a file, whichever screen is on top. The
     /// comparison screen keeps the previously browsed result, so the view alone is not enough.
     #[cfg(any(target_os = "android", target_os = "ios", test))]
     pub(super) fn shows_saved_result(&self) -> bool {
-        matches!((&self.saved, &self.result), (Some(saved), Some(result)) if Arc::ptr_eq(&saved.result, result))
+        self.result.as_ref().is_some_and(|result| {
+            [self.saved.as_ref(), self.second.as_ref()]
+                .into_iter()
+                .flatten()
+                .any(|saved| Arc::ptr_eq(&saved.result, result))
+        })
     }
     pub(super) fn open_saved_dialog(&mut self) {
+        self.open_saved_dialog_as(OpenTarget::Auto);
+    }
+    /// Ask for a file; where it goes is decided when it has been read.
+    pub(super) fn open_saved_dialog_as(&mut self, target: OpenTarget) {
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("JSON", &["json"])
             .pick_file()
         {
-            self.open_saved(path, false);
+            self.open_saved_as(path, false, target);
         }
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
+            self.native_open_target = target;
             self.native_open = crate::mobile::request_open();
             if self.native_open.is_none() {
                 self.notice = Some("unavailable");
@@ -189,30 +426,143 @@ impl ExplorerApp {
     /// Start reading one chosen file. A newer request supersedes an older one: the
     /// older job is cancelled and can no longer deliver a result.
     pub(super) fn open_saved(&mut self, path: PathBuf, delete_after: bool) {
+        self.open_saved_as(path, delete_after, OpenTarget::Auto);
+    }
+    pub(super) fn open_saved_as(&mut self, path: PathBuf, delete_after: bool, target: OpenTarget) {
+        // A request from the person supersedes anything still waiting its turn.
+        self.open_queue.clear();
+        self.begin_open(path, delete_after, target, true);
+    }
+    /// Several files given at once (command line, drop): they are read one after
+    /// another into free slots instead of each cancelling the one before.
+    pub fn open_results(&mut self, mut paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        let first = paths.remove(0);
+        self.open_saved_as(first, false, OpenTarget::Auto);
+        self.open_queue = paths.into();
+    }
+    fn begin_open(
+        &mut self,
+        path: PathBuf,
+        delete_after: bool,
+        target: OpenTarget,
+        reset_error: bool,
+    ) {
         // Drop any queued result before the next worker samples available memory.
         drop(self.open_job.take());
-        self.open_error = None;
+        // A comparison in flight describes operands that this file may replace, and
+        // would otherwise compete with the import for the same memory.
+        self.changes.job = None;
+        if reset_error {
+            self.open_error = None;
+        }
         self.open_name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        self.open_job = Some(job::open_local(path, delete_after));
+        self.open_target = target;
+        let held = self.held_bytes();
+        self.open_job = Some(self.spawn_open(path, delete_after, held));
     }
-    pub(super) fn close_saved(&mut self) {
-        self.saved = None;
+    fn spawn_open(&self, path: PathBuf, delete_after: bool, held: usize) -> job::OpenJob {
+        #[cfg(test)]
+        if let Some(total) = self.memory_budget {
+            let limits = crate::import::Limits {
+                memory_limit: total.saturating_sub(held),
+                ..crate::import::Limits::platform()
+            };
+            return job::open(path, limits, delete_after);
+        }
+        job::open_local(path, delete_after, held)
+    }
+    fn spawn_compare(
+        &self,
+        baseline: Arc<ScanResult>,
+        current: Arc<ScanResult>,
+        held: usize,
+    ) -> job::CompareJob {
+        let confirm = self.changes.confirm_scope;
+        #[cfg(test)]
+        if let Some(total) = self.memory_budget {
+            return job::compare(baseline, current, confirm, total.saturating_sub(held));
+        }
+        job::compare_local(baseline, current, confirm, held)
+    }
+    /// The slot a file read for `target` is stored in.
+    fn slot_for(&self, target: OpenTarget) -> View {
+        let free = [View::Saved, View::Second]
+            .into_iter()
+            .find(|&view| self.snapshot(view).is_none());
+        match target {
+            OpenTarget::Side(side) => {
+                let own = self.changes.operand(side);
+                if own.is_snapshot() {
+                    own
+                } else if let Some(free) = free {
+                    free
+                } else if self.changes.operand(side.other()) == View::Saved {
+                    View::Second
+                } else {
+                    View::Saved
+                }
+            }
+            // Never over the snapshot it is compared with.
+            OpenTarget::Compare(_, anchor) => {
+                if anchor == View::Saved {
+                    View::Second
+                } else {
+                    View::Saved
+                }
+            }
+            OpenTarget::Auto => free.unwrap_or(if self.view.is_snapshot() {
+                self.view
+            } else {
+                View::Saved
+            }),
+        }
+    }
+    /// Close one opened file. Any comparison that used it is forgotten.
+    pub(super) fn close_saved(&mut self, view: View) {
+        if !view.is_snapshot() {
+            return;
+        }
+        let closed = self.snapshot_slot(view).take();
+        let displayed = closed.as_ref().is_some_and(|closed| {
+            self.result
+                .as_ref()
+                .is_some_and(|shown| Arc::ptr_eq(shown, &closed.result))
+        });
+        self.settle_operands();
         self.changes.clear();
-        if self.view != View::Live {
-            self.view = View::Live;
-            let live = self.live.clone();
-            self.set_displayed(live);
+        if displayed || self.view == view {
+            let next = self.fallback_view();
+            let shown = self.operand(next);
+            if self.view == View::Changes && shown.is_some() {
+                // Stay on the comparison screen, but do not keep the closed result alive.
+            } else {
+                self.view = next;
+            }
+            self.set_displayed(shown);
+            self.phone_home = false;
+        }
+        self.sync_native_result();
+    }
+    /// What to browse when the comparison screen is left or a result goes away.
+    fn fallback_view(&self) -> View {
+        if self.live.is_some() {
+            View::Live
+        } else if self.saved.is_some() {
+            View::Saved
+        } else if self.second.is_some() {
+            View::Second
+        } else {
+            View::Live
         }
     }
     pub(super) fn leave_changes(&mut self) {
-        let target = if self.saved.is_some() && self.live.is_none() {
-            View::Saved
-        } else {
-            View::Live
-        };
+        let target = self.fallback_view();
         self.show(target);
         if self.view == View::Changes {
             self.view = target;
@@ -224,19 +574,12 @@ impl ExplorerApp {
         {
             self.open_job = None;
             match outcome {
-                Ok(result) => {
-                    self.saved = Some(SavedResult {
-                        result: Arc::new(result),
-                        name: std::mem::take(&mut self.open_name),
-                    });
-                    self.changes.clear();
-                    let saved = self.saved.as_ref().map(|s| s.result.clone());
-                    self.view = View::Saved;
-                    self.phone_home = false;
-                    self.set_displayed(saved);
-                }
+                Ok(result) => self.store_opened(result),
                 Err(ImportError::Cancelled) => {}
                 Err(error) => self.show_open_error(error),
+            }
+            if let Some(next) = self.open_queue.pop_front() {
+                self.begin_open(next, false, OpenTarget::Auto, false);
             }
         }
         if let Some(job) = &self.changes.job
@@ -244,13 +587,15 @@ impl ExplorerApp {
         {
             self.changes.job = None;
             match outcome {
-                Ok(comparison) => {
+                // Only a diff of the results chosen now may be shown.
+                Ok(comparison) if self.matches_operands(&comparison) => {
                     self.changes.comparison = Some(Arc::new(comparison));
                     self.changes.dirty = true;
                     self.changes.selected = None;
                     self.changes.expanded = HashSet::from([0]);
                     self.sync_native_result();
                 }
+                Ok(_) => {}
                 Err(CompareError::Incompatible(scope)) => {
                     self.changes.failure = Some(CompareFailure::Incompatible(scope));
                 }
@@ -260,8 +605,12 @@ impl ExplorerApp {
                 Err(CompareError::TooLarge) => {
                     self.changes.failure = Some(CompareFailure::Other("import_error_too_large"));
                 }
+                Err(CompareError::MemoryLimit) => {
+                    self.changes.failure = Some(CompareFailure::Other("compare_memory_limit"));
+                }
                 Err(CompareError::Cancelled) => {}
             }
+            self.sync_native_result();
         }
         #[cfg(any(target_os = "android", target_os = "ios"))]
         if let Some(receiver) = &self.native_open
@@ -269,7 +618,9 @@ impl ExplorerApp {
         {
             self.native_open = None;
             match outcome {
-                crate::mobile::OpenOutcome::Ready(path) => self.open_saved(path, true),
+                crate::mobile::OpenOutcome::Ready(path) => {
+                    self.open_saved_as(path, true, self.native_open_target)
+                }
                 crate::mobile::OpenOutcome::Cancelled => {}
                 crate::mobile::OpenOutcome::TooLarge => {
                     self.show_open_error(ImportError::TooLarge {
@@ -282,30 +633,79 @@ impl ExplorerApp {
             }
         }
     }
+    fn matches_operands(&self, comparison: &Comparison) -> bool {
+        self.operands().is_some_and(|(baseline, current)| {
+            Arc::ptr_eq(&baseline, &comparison.baseline)
+                && Arc::ptr_eq(&current, &comparison.current)
+        })
+    }
+    /// Keep a file that finished reading. Replacing a result resets the diff and
+    /// the confirmation made for the previous pair.
+    fn store_opened(&mut self, result: ScanResult) {
+        let target = self.open_target;
+        let slot = self.slot_for(target);
+        let name = std::mem::take(&mut self.open_name);
+        let replaced = self.snapshot(slot).map(|s| s.result.clone());
+        *self.snapshot_slot(slot) = Some(SavedResult {
+            result: Arc::new(result),
+            name,
+        });
+        match target {
+            OpenTarget::Side(side) => self.changes.set(side, slot),
+            OpenTarget::Compare(side, anchor) => {
+                self.changes.set(side, slot);
+                self.changes.set(side.other(), anchor);
+            }
+            OpenTarget::Auto => {}
+        }
+        self.settle_operands();
+        self.changes.clear();
+        self.phone_home = false;
+        let shown = self.operand(slot);
+        // A result that was on screen must not stay alive behind the new one.
+        let was_shown = replaced.is_some_and(|old| {
+            self.result
+                .as_ref()
+                .is_some_and(|result| Arc::ptr_eq(result, &old))
+        });
+        match target {
+            OpenTarget::Compare(..) => {
+                self.view = slot;
+                self.set_displayed(shown);
+                self.open_changes();
+            }
+            OpenTarget::Side(_) if self.view == View::Changes => {
+                if was_shown {
+                    self.set_displayed(shown);
+                } else {
+                    self.sync_native_result();
+                }
+            }
+            _ => {
+                self.view = slot;
+                self.set_displayed(shown);
+            }
+        }
+    }
     fn show_open_error(&mut self, error: ImportError) {
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             let t = |key| i18n::text(self.language, key);
-            let message = format!(
+            let mut message = format!(
                 "{}\n{}\n{}",
                 t("import_failed"),
                 t(error.key()),
                 error.detail()
             );
+            if self.has_snapshot() || self.live.is_some() {
+                message.push('\n');
+                message.push_str(t("import_kept_open"));
+            }
             let _ = crate::mobile::request(serde_json::json!({
                 "op": "saved_open_error", "message": message,
             }));
         }
         self.open_error = Some(error);
-    }
-    fn operands(&self) -> Option<(Arc<ScanResult>, Arc<ScanResult>)> {
-        let saved = self.saved.as_ref()?.result.clone();
-        let live = self.live.clone()?;
-        Some(if self.changes.reversed {
-            (live, saved)
-        } else {
-            (saved, live)
-        })
     }
     pub(super) fn start_compare(&mut self) {
         let Some((baseline, current)) = self.operands() else {
@@ -313,26 +713,52 @@ impl ExplorerApp {
         };
         self.changes.comparison = None;
         self.changes.failure = None;
-        self.changes.job = Some(job::compare(baseline, current, self.changes.confirm_scope));
+        let held = self.held_bytes();
+        self.changes.job = Some(self.spawn_compare(baseline, current, held));
+        self.sync_native_result();
     }
-    pub(super) fn swap_direction(&mut self) {
-        self.changes.reversed = !self.changes.reversed;
+    /// Forget the diff, the confirmation and the selected row; the operands changed.
+    fn reset_diff(&mut self) {
         self.changes.confirm_scope = false;
         self.changes.comparison = None;
         self.changes.job = None;
         self.changes.failure = None;
         self.changes.selected = None;
         self.changes.dirty = true;
+        self.sync_native_result();
+    }
+    pub(super) fn swap_direction(&mut self) {
+        std::mem::swap(&mut self.changes.baseline, &mut self.changes.current);
+        self.reset_diff();
+    }
+    /// Choose which result stands on one side. Picking the one on the other side
+    /// reverses the direction instead.
+    pub(super) fn set_operand(&mut self, side: Side, view: View) {
+        if self.changes.operand(side) == view || self.operand(view).is_none() {
+            return;
+        }
+        if self.changes.operand(side.other()) == view {
+            self.swap_direction();
+            return;
+        }
+        self.changes.set(side, view);
+        self.reset_diff();
     }
     pub(super) fn open_changes(&mut self) {
         self.show(View::Changes);
         self.phone_overlay = None;
     }
-    fn side_view(&self, side: Side) -> View {
-        match (side, self.changes.reversed) {
-            (Side::Baseline, false) | (Side::Current, true) => View::Saved,
-            _ => View::Live,
+    /// Compare the result on screen with the current scan.
+    pub(super) fn compare_with_current(&mut self, view: View) {
+        if view.is_snapshot() && self.live.is_some() {
+            self.changes.baseline = view;
+            self.changes.current = View::Live;
+            self.reset_diff();
         }
+        self.open_changes();
+    }
+    fn side_view(&self, side: Side) -> View {
+        self.changes.operand(side)
     }
     /// Show the object a change row refers to in the result it came from.
     pub(super) fn goto(&mut self, side: Side, node: u32) {
@@ -372,6 +798,23 @@ impl ExplorerApp {
             })
         )
     }
+    /// File name for an opened result, scan root name for the current scan, with
+    /// the capture time: what identifies one side of a comparison.
+    fn operand_line(&self, view: View) -> String {
+        let t = |key| i18n::text(self.language, key);
+        match self.operand(view) {
+            Some(result) => {
+                let name = self.operand_name(view);
+                let label = if view == View::Live {
+                    t("view_current")
+                } else {
+                    t("saved_file")
+                };
+                format!("{label}: {name} · {}", self.captured(&result))
+            }
+            None => t("compare_not_chosen").to_owned(),
+        }
+    }
     pub(super) fn open_status(&mut self, ui: &mut egui::Ui) {
         let language = self.language;
         let t = |key| i18n::text(language, key);
@@ -384,10 +827,12 @@ impl ExplorerApp {
                 ui.label(i18n::bytes(language, read));
                 if ui.button(t("cancel")).clicked() {
                     self.open_job = None;
+                    self.open_queue.clear();
                 }
             });
         }
         if let Some(error) = self.open_error.clone() {
+            let kept = self.has_snapshot() || self.live.is_some();
             egui::Frame::new()
                 .fill(theme::surface(ui.visuals().dark_mode))
                 .corner_radius(8)
@@ -397,6 +842,9 @@ impl ExplorerApp {
                     ui.label(RichText::new(t("import_failed")).strong());
                     ui.label(t(error.key()));
                     ui.label(RichText::new(error.detail()).small().weak());
+                    if kept {
+                        ui.label(t("import_kept_open"));
+                    }
                     if ui.button(t("close")).clicked() {
                         self.open_error = None;
                     }
@@ -405,7 +853,8 @@ impl ExplorerApp {
     }
     /// Unmistakable banner: the result on screen is an older snapshot.
     pub(super) fn saved_banner(&mut self, ui: &mut egui::Ui) {
-        let (Some(saved), View::Saved) = (&self.saved, self.view) else {
+        let view = self.view;
+        let Some(saved) = self.snapshot(view).filter(|_| view.is_snapshot()) else {
             return;
         };
         let (result, name) = (saved.result.clone(), saved.name.clone());
@@ -436,10 +885,20 @@ impl ExplorerApp {
                 }
                 ui.horizontal_wrapped(|ui| {
                     if self.live.is_some() && ui.button(t("compare_with_current")).clicked() {
-                        self.open_changes();
+                        self.compare_with_current(view);
+                    }
+                    if ui
+                        .add_enabled(
+                            self.open_job.is_none(),
+                            egui::Button::new(t("compare_with_file")),
+                        )
+                        .clicked()
+                    {
+                        // This file is Before; the chosen file becomes After once it is read.
+                        self.open_saved_dialog_as(OpenTarget::Compare(Side::Current, view));
                     }
                     if ui.button(t("saved_close")).clicked() {
-                        self.close_saved();
+                        self.close_saved(view);
                     }
                 });
                 if self.live.is_none() {
@@ -449,31 +908,45 @@ impl ExplorerApp {
         ui.add_space(8.0);
     }
     pub(super) fn view_tabs(&mut self, ui: &mut egui::Ui) {
-        if self.saved.is_none() {
+        if !self.has_snapshot() {
             return;
         }
         let language = self.language;
         let t = |key| i18n::text(language, key);
+        let both = self.saved.is_some() && self.second.is_some();
         ui.horizontal_wrapped(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             let mut next = None;
-            for (view, key, enabled) in [
+            let tabs = [
                 (
                     View::Live,
-                    "view_current",
+                    t("view_current").to_owned(),
                     self.live.is_some() || self.job.is_some(),
                 ),
-                (View::Saved, "view_saved", true),
                 (
-                    View::Changes,
-                    "view_changes",
-                    self.has_baseline_and_current(),
+                    View::Saved,
+                    if both {
+                        self.operand_name(View::Saved)
+                    } else {
+                        t("view_saved").to_owned()
+                    },
+                    self.saved.is_some(),
                 ),
-            ] {
+                (
+                    View::Second,
+                    self.operand_name(View::Second),
+                    self.second.is_some(),
+                ),
+                (View::Changes, t("view_changes").to_owned(), true),
+            ];
+            for (view, label, enabled) in tabs {
+                if view == View::Second && !enabled {
+                    continue;
+                }
                 if ui
                     .add_enabled(
                         enabled,
-                        egui::Button::new(t(key)).selected(self.view == view),
+                        egui::Button::new(label).selected(self.view == view),
                     )
                     .clicked()
                 {
@@ -488,10 +961,31 @@ impl ExplorerApp {
         });
     }
 
-    fn side_card(&self, ui: &mut egui::Ui, title: &str, view: View) {
+    /// One side of the comparison: what it is, when it was captured, and the
+    /// choice of which open result stands here.
+    fn side_card(&mut self, ui: &mut egui::Ui, side: Side) {
         let language = self.language;
         let t = |key| i18n::text(language, key);
         let dark = ui.visuals().dark_mode;
+        let view = self.changes.operand(side);
+        let title = t(match side {
+            Side::Baseline => "compare_baseline",
+            Side::Current => "compare_current",
+        });
+        let options: Vec<(View, String)> = self
+            .available_operands()
+            .into_iter()
+            .map(|option| {
+                let label = if option == View::Live {
+                    t("view_current").to_owned()
+                } else {
+                    self.operand_name(option)
+                };
+                (option, label)
+            })
+            .collect();
+        let mut chosen = None;
+        let mut open = false;
         egui::Frame::new()
             .fill(theme::surface(dark))
             .corner_radius(8)
@@ -499,23 +993,60 @@ impl ExplorerApp {
             .show(ui, |ui| {
                 ui.set_min_width((ui.available_width()).max(120.0));
                 ui.label(RichText::new(title).small().color(theme::accent(dark)));
-                match view {
-                    View::Saved => {
-                        if let Some(saved) = &self.saved {
-                            ui.label(RichText::new(t("view_saved")).strong());
-                            ui.label(&saved.name);
-                            ui.label(self.describe(&saved.result));
+                match self.operand(view) {
+                    Some(result) => {
+                        ui.label(
+                            RichText::new(if view == View::Live {
+                                t("view_current")
+                            } else {
+                                t("saved_file")
+                            })
+                            .strong(),
+                        );
+                        ui.label(self.operand_name(view));
+                        ui.label(self.describe(&result));
+                        if result.schema_version < 2 {
+                            ui.label(RichText::new(t("saved_schema_one")).small());
                         }
                     }
-                    _ => {
-                        if let Some(live) = &self.live {
-                            ui.label(RichText::new(t("view_current")).strong());
-                            ui.label(&live.nodes[0].name);
-                            ui.label(self.describe(live));
-                        }
+                    None => {
+                        ui.label(RichText::new(t("compare_not_chosen")).strong());
                     }
                 }
+                let source = ui.label(RichText::new(t("compare_source")).small());
+                let selected = options
+                    .iter()
+                    .find(|(option, _)| *option == view)
+                    .map_or_else(|| t("compare_not_chosen").to_owned(), |(_, l)| l.clone());
+                let combo =
+                    egui::ComboBox::from_id_salt(("compare-source", side == Side::Baseline))
+                        .selected_text(selected)
+                        .width(ui.available_width().min(320.0))
+                        .show_ui(ui, |ui| {
+                            for (option, label) in &options {
+                                if ui.selectable_label(*option == view, label).clicked() {
+                                    chosen = Some(*option);
+                                }
+                            }
+                        });
+                combo.response.labelled_by(source.id);
+                open = ui
+                    .add_enabled(
+                        self.open_job.is_none(),
+                        egui::Button::new(t(match side {
+                            Side::Baseline => "compare_open_before",
+                            Side::Current => "compare_open_after",
+                        }))
+                        .wrap(),
+                    )
+                    .clicked();
             });
+        if let Some(option) = chosen {
+            self.set_operand(side, option);
+        }
+        if open {
+            self.open_saved_dialog_as(OpenTarget::Side(side));
+        }
     }
 
     fn scope_text(&self, assessment: &compare::ScopeAssessment) -> String {
@@ -528,39 +1059,67 @@ impl ExplorerApp {
             .join(" ")
     }
 
-    /// Explicit choice of baseline and current result, before comparing.
+    fn compare_failure(&self, ui: &mut egui::Ui) {
+        let t = |key| i18n::text(self.language, key);
+        let dark = ui.visuals().dark_mode;
+        let frame = |ui: &mut egui::Ui, add: &dyn Fn(&mut egui::Ui)| {
+            egui::Frame::new()
+                .fill(theme::surface(dark))
+                .stroke(egui::Stroke::new(1.0, theme::accent(dark)))
+                .corner_radius(8)
+                .inner_margin(10)
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    add(ui);
+                });
+        };
+        match &self.changes.failure {
+            Some(CompareFailure::Incompatible(scope)) => frame(ui, &|ui| {
+                ui.label(t("cmp_verdict_incompatible"));
+                ui.label(RichText::new(self.scope_text(scope)).small());
+            }),
+            Some(CompareFailure::Other(key)) => frame(ui, &|ui| {
+                ui.label(t(key));
+                if *key == "compare_memory_limit" {
+                    ui.label(t("import_kept_open"));
+                }
+            }),
+            None => {}
+        }
+    }
+
+    /// Explicit choice of Before and After, before comparing.
     fn compare_setup(&mut self, ui: &mut egui::Ui) {
         let language = self.language;
         let t = |key| i18n::text(language, key);
-        let Some((baseline, current)) = self.operands() else {
-            ui.label(t("compare_needs_both"));
-            return;
-        };
-        let (base_view, current_view) = (
-            self.side_view(Side::Baseline),
-            self.side_view(Side::Current),
-        );
         ui.label(RichText::new(t("compare_heading")).size(20.0));
         ui.label(t("compare_direction_help"));
+        // The outcome of the last attempt comes first: on a phone the buttons are far below.
+        self.compare_failure(ui);
         let wide = ui.available_width() > 560.0;
         let arrow = t("compare_arrow");
-        let draw_cards = |ui: &mut egui::Ui, this: &Self| {
-            this.side_card(ui, t("compare_baseline"), base_view);
-            ui.label(RichText::new(arrow).strong());
-            this.side_card(ui, t("compare_current"), current_view);
-        };
         if wide {
             ui.columns(3, |columns| {
-                self.side_card(&mut columns[0], t("compare_baseline"), base_view);
+                self.side_card(&mut columns[0], Side::Baseline);
                 columns[1].vertical_centered(|ui| {
                     ui.add_space(24.0);
                     ui.label(RichText::new(arrow).strong());
                 });
-                self.side_card(&mut columns[2], t("compare_current"), current_view);
+                self.side_card(&mut columns[2], Side::Current);
             });
         } else {
-            draw_cards(ui, self);
+            self.side_card(ui, Side::Baseline);
+            ui.label(RichText::new(arrow).strong());
+            self.side_card(ui, Side::Current);
         }
+        let Some((baseline, current)) = self.operands() else {
+            ui.label(t(if self.changes.baseline == self.changes.current {
+                "compare_same_source"
+            } else {
+                "compare_needs_two"
+            }));
+            return;
+        };
         if ui.button(t("compare_swap")).clicked() {
             self.swap_direction();
             return;
@@ -599,7 +1158,7 @@ impl ExplorerApp {
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
-                    can_compare && self.changes.job.is_none(),
+                    can_compare && self.changes.job.is_none() && self.open_job.is_none(),
                     egui::Button::new(t("compare_start")),
                 )
                 .clicked()
@@ -614,16 +1173,6 @@ impl ExplorerApp {
                 }
             }
         });
-        match &self.changes.failure {
-            Some(CompareFailure::Incompatible(scope)) => {
-                ui.label(t("cmp_verdict_incompatible"));
-                ui.label(RichText::new(self.scope_text(scope)).small());
-            }
-            Some(CompareFailure::Other(key)) => {
-                ui.label(t(key));
-            }
-            None => {}
-        }
     }
 
     fn refresh_changes(&mut self) {
@@ -1157,21 +1706,26 @@ impl ExplorerApp {
                 self.swap_direction();
             }
         });
-        if let (Some(comparison), true) = (&self.changes.comparison, self.view == View::Changes) {
-            let describe = |result: &ScanResult| {
-                format!("{} · {}", result.nodes[0].name, self.captured(result))
-            };
-            ui.label(
-                RichText::new(format!(
-                    "{}: {}   {}   {}: {}",
-                    t("compare_baseline"),
-                    describe(&comparison.baseline),
-                    t("compare_arrow"),
-                    t("compare_current"),
-                    describe(&comparison.current)
-                ))
-                .small(),
-            );
+        if self.changes.comparison.is_some() && self.view == View::Changes {
+            // The comparison is dropped whenever an operand changes, so these are its sides.
+            for (side, view) in [
+                (Side::Baseline, self.changes.baseline),
+                (Side::Current, self.changes.current),
+            ] {
+                let title = t(match side {
+                    Side::Baseline => "compare_baseline",
+                    Side::Current => "compare_current",
+                });
+                let arrow = if side == Side::Baseline {
+                    ""
+                } else {
+                    t("compare_arrow")
+                };
+                ui.label(
+                    RichText::new(format!("{arrow} {title}: {}", self.operand_line(view)).trim())
+                        .small(),
+                );
+            }
         }
     }
 

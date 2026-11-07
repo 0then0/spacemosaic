@@ -1861,7 +1861,7 @@ fn showing_an_object_from_a_change_navigates_the_matching_result() {
         .find(|&i| comparison.name(i) == "extra.bin")
         .unwrap();
     let old = comparison.nodes[removed].old.unwrap();
-    app.goto(saved::Side::Baseline, old);
+    app.goto(crate::compare::Side::Baseline, old);
     assert_eq!(app.view, View::Saved);
     assert_eq!(app.navigation.selected, Some(old as usize));
     assert!(Arc::ptr_eq(
@@ -1871,7 +1871,10 @@ fn showing_an_object_from_a_change_navigates_the_matching_result() {
     let grew = (0..comparison.nodes.len())
         .find(|&i| comparison.name(i) == "image.jpg")
         .unwrap();
-    app.goto(saved::Side::Current, comparison.nodes[grew].new.unwrap());
+    app.goto(
+        crate::compare::Side::Current,
+        comparison.nodes[grew].new.unwrap(),
+    );
     assert_eq!(app.view, View::Live);
     assert_eq!(
         app.navigation.directory, 2,
@@ -2310,4 +2313,1132 @@ fn scan_memory_responsiveness_measurement() {
         cancelled.nodes.len(),
         cancel_start.elapsed().as_micros()
     );
+}
+
+// ----- Comparing two opened files -----
+
+const DAY: u64 = 86_400;
+const FIRST_DAY: u64 = 1_790_000_000;
+
+/// A schema 2 copy of a fixture result that records where it came from, as an
+/// export from that platform would.
+fn recorded(
+    mut result: ScanResult,
+    platform: &str,
+    source: scan::SourceKind,
+    root: &str,
+    started: u64,
+) -> ScanResult {
+    result.schema_version = 2;
+    result.started_unix_seconds = started;
+    result.scope = root.into();
+    result.nodes[0].locator = root.into();
+    result.nodes[0].native_locator = root.into();
+    for node in &mut result.nodes {
+        if node.kind == Kind::Directory {
+            node.listing_complete = Some(node.complete);
+        }
+    }
+    result.scope_identity = Some(scan::ScopeIdentity {
+        source,
+        platform: platform.into(),
+        root: root.into(),
+        root_inode: None,
+        root_created_unix_nanos: None,
+    });
+    result
+}
+fn macos_snapshot(result: &ScanResult, started: u64) -> ScanResult {
+    recorded(
+        result.clone(),
+        "macos",
+        scan::SourceKind::Filesystem,
+        "/Users/test/Scope",
+        started,
+    )
+}
+fn android_snapshot(result: &ScanResult, started: u64) -> ScanResult {
+    recorded(
+        result.clone(),
+        "android",
+        scan::SourceKind::AndroidSaf,
+        "content://com.android.externalstorage.documents/tree/primary%3ATest/document/primary%3ATest",
+        started,
+    )
+}
+/// Two files of the same area, a few days apart: image.jpg grows by 40 bytes and
+/// extra.bin (400 bytes) is gone; notes.txt is unchanged.
+fn two_days(make: impl Fn(&ScanResult, u64) -> ScanResult) -> (ScanResult, ScanResult) {
+    let live = fixture().result.clone().unwrap();
+    let before = variant(&live, |nodes| {
+        nodes[3].logical.known = 60;
+        nodes.truncate(5);
+        nodes[4].logical.known = 20;
+        let mut extra = nodes[4].clone();
+        extra.name = "extra.bin".into();
+        extra.locator = "extra.bin".into();
+        extra.native_locator = "extra.bin".into();
+        extra.logical.known = 400;
+        extra.parent = Some(0);
+        nodes.push(extra);
+    });
+    (make(&before, FIRST_DAY), make(&live, FIRST_DAY + 3 * DAY))
+}
+fn write_snapshot(directory: &std::path::Path, name: &str, result: &ScanResult) -> PathBuf {
+    std::fs::create_dir_all(directory).unwrap();
+    let path = directory.join(name);
+    scan::write_export(result, &path, true).unwrap();
+    path
+}
+/// An app that has not seen the files before, as after a restart, with both opened.
+fn reopened(before: &std::path::Path, after: &std::path::Path, size: egui::Vec2) -> ExplorerApp {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = ExplorerApp::empty();
+    app.language = 0;
+    app.phone_home = false;
+    app.open_saved_as(
+        before.to_path_buf(),
+        false,
+        OpenTarget::Side(compare::Side::Baseline),
+    );
+    settle(&mut app, &context, size);
+    app.open_saved_as(
+        after.to_path_buf(),
+        false,
+        OpenTarget::Side(compare::Side::Current),
+    );
+    settle(&mut app, &context, size);
+    app
+}
+fn start_and_settle(app: &mut ExplorerApp, size: egui::Vec2) {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    app.start_compare();
+    settle(app, &context, size);
+}
+fn net(app: &ExplorerApp) -> i128 {
+    app.changes
+        .comparison
+        .as_ref()
+        .unwrap()
+        .totals(Dimension::Logical)
+        .net()
+}
+fn files_directory(label: &str) -> (preferences::tests::Fixture, PathBuf) {
+    let files = preferences::tests::Fixture::new();
+    let directory = files.path().with_extension(label);
+    (files, directory)
+}
+
+#[test]
+fn two_exported_scans_of_one_folder_compare_after_the_app_is_closed_and_reopened() {
+    let (_files, work) = files_directory("album");
+    let folder = work.join("album");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    for (name, size) in [
+        ("keep.bin", 100),
+        ("grow.bin", 1000),
+        ("gone.bin", 5000),
+        ("sub/inner.bin", 50),
+    ] {
+        std::fs::write(folder.join(name), vec![7; size]).unwrap();
+    }
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let scan_now = |started: u64| {
+        let mut app = ExplorerApp::empty();
+        app.language = 0;
+        app.phone_home = false;
+        app.start(folder.clone());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while app.live.is_none() {
+            frame_at(&mut app, &context, vec![], size);
+            assert!(Instant::now() < deadline, "scan did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The app exports through `write_export`; the date stands for another day.
+        let mut result = (**app.live.as_ref().unwrap()).clone();
+        result.started_unix_seconds = started;
+        result
+    };
+    let first = write_snapshot(&work, "album-day1.json", &scan_now(FIRST_DAY));
+    std::fs::write(folder.join("grow.bin"), vec![7; 3000]).unwrap();
+    std::fs::remove_file(folder.join("gone.bin")).unwrap();
+    std::fs::write(folder.join("new.bin"), vec![7; 700]).unwrap();
+    let second = write_snapshot(&work, "album-day2.json", &scan_now(FIRST_DAY + 3 * DAY));
+
+    // A new process: nothing from the scans is in memory except the two files.
+    let mut app = reopened(&first, &second, size);
+    assert!(app.live.is_none() && app.job.is_none());
+    assert_eq!(app.saved.as_ref().unwrap().name, "album-day1.json");
+    assert_eq!(app.second.as_ref().unwrap().name, "album-day2.json");
+    assert_eq!(
+        (app.changes.baseline, app.changes.current),
+        (View::Saved, View::Second)
+    );
+    app.open_changes();
+    let setup = rendered_texts(&frame_at(&mut app, &context, vec![], size)).join("\n");
+    for expected in [
+        "album-day1.json",
+        "album-day2.json",
+        &i18n::timestamp(FIRST_DAY),
+        &i18n::timestamp(FIRST_DAY + 3 * DAY),
+        i18n::text(0, "cmp_verdict_matching"),
+        i18n::text(0, "compare_baseline"),
+        i18n::text(0, "compare_current"),
+    ] {
+        assert!(setup.contains(expected), "setup lacks {expected}");
+    }
+    // The recorded identity of one real folder matches; nothing needs confirming.
+    assert!(!setup.contains(i18n::text(0, "compare_confirm_scope")));
+    start_and_settle(&mut app, size);
+    let comparison = app.changes.comparison.clone().expect("comparison");
+    let totals = comparison.totals(Dimension::Logical);
+    assert_eq!(
+        (totals.added, totals.removed, totals.grown, totals.shrunk),
+        (700, 5000, 2000, 0)
+    );
+    assert_eq!(totals.net(), -2300);
+    assert_eq!(
+        comparison.baseline.nodes[0].logical.known as i128
+            - comparison.current.nodes[0].logical.known as i128,
+        2300
+    );
+    let output = frame_at(&mut app, &context, vec![], size);
+    let texts = rendered_texts(&output).join("\n");
+    for expected in [
+        "gone.bin",
+        "grow.bin",
+        "new.bin",
+        "album-day1.json",
+        "album-day2.json",
+    ] {
+        assert!(texts.contains(expected), "result lacks {expected}");
+    }
+    assert!(texts.contains(&i18n::timestamp(FIRST_DAY + 3 * DAY)));
+    assert_eq!(app.changes.rows.len(), 3);
+    // Rows lead to the matching file.
+    let row = |name: &str| {
+        (0..comparison.nodes.len())
+            .find(|&i| comparison.name(i) == name)
+            .unwrap()
+    };
+    let gone = comparison.nodes[row("gone.bin")];
+    app.goto(compare::Side::Baseline, gone.old.unwrap());
+    assert_eq!(app.view, View::Saved);
+    assert!(Arc::ptr_eq(
+        app.result.as_ref().unwrap(),
+        &app.saved.as_ref().unwrap().result
+    ));
+    assert_eq!(app.navigation.selected, Some(gone.old.unwrap() as usize));
+    let fresh = comparison.nodes[row("new.bin")];
+    app.goto(compare::Side::Current, fresh.new.unwrap());
+    assert_eq!(app.view, View::Second);
+    assert!(Arc::ptr_eq(
+        app.result.as_ref().unwrap(),
+        &app.second.as_ref().unwrap().result
+    ));
+    assert_eq!(app.navigation.selected, Some(fresh.new.unwrap() as usize));
+    assert!(app.shows_saved_result());
+    // Each file is still viewable on its own, with its own banner.
+    app.show(View::Saved);
+    let banner = rendered_texts(&frame_at(&mut app, &context, vec![], size)).join("\n");
+    assert!(banner.contains("album-day1.json") && banner.contains(&i18n::timestamp(FIRST_DAY)));
+
+    // Reversing the direction reverses every status and amount.
+    app.open_changes();
+    app.swap_direction();
+    assert!(app.changes.comparison.is_none() && !app.changes.confirm_scope);
+    start_and_settle(&mut app, size);
+    let back = app.changes.comparison.clone().unwrap();
+    let totals = back.totals(Dimension::Logical);
+    assert_eq!(
+        (totals.added, totals.removed, totals.grown, totals.shrunk),
+        (5000, 700, 0, 2000)
+    );
+    assert_eq!(net(&app), 2300);
+    assert_eq!(
+        back.event_status(row_of(&back, "gone.bin"), Dimension::Logical),
+        Status::Added
+    );
+    let swapped = rendered_texts(&frame_at(&mut app, &context, vec![], size));
+    let side = |key: &str, file: &str| {
+        swapped.iter().any(|line| {
+            line.trim_start_matches(i18n::text(0, "compare_arrow"))
+                .trim_start()
+                .starts_with(&format!("{}: ", i18n::text(0, key)))
+                && line.contains(file)
+        })
+    };
+    assert!(side("compare_baseline", "album-day2.json"));
+    assert!(side("compare_current", "album-day1.json"));
+}
+fn row_of(comparison: &Comparison, name: &str) -> usize {
+    (0..comparison.nodes.len())
+        .find(|&i| comparison.name(i) == name)
+        .unwrap()
+}
+use crate::compare::{self, Comparison, Status};
+
+fn macos_pair(directory: &std::path::Path) -> (PathBuf, PathBuf) {
+    let (before, after) = two_days(macos_snapshot);
+    (
+        write_snapshot(directory, "photos-2026-09.json", &before),
+        write_snapshot(directory, "photos-2026-10.json", &after),
+    )
+}
+
+#[test]
+fn choosing_before_and_after_shows_files_dates_and_direction_in_every_language_and_layout() {
+    let (_files, work) = files_directory("languages");
+    let (before, after) = macos_pair(&work);
+    for language in 0..i18n::TAGS.len() {
+        // Widgets below the fold are not painted, so the phone is tall enough to hold the screen.
+        for (size, zoom) in [
+            (egui::vec2(1180.0, 900.0), 1.0),
+            (egui::vec2(360.0, 3000.0), 1.0),
+            (egui::vec2(360.0, 3000.0), 1.6),
+        ] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            context.set_fonts(crate::fonts::definitions());
+            context.set_zoom_factor(zoom);
+            let mut app = reopened(&before, &after, size);
+            app.language = language;
+            app.open_changes();
+            for _ in 0..2 {
+                frame_at(&mut app, &context, vec![], size);
+            }
+            let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size));
+            let all = texts.join("\n");
+            let t = |key| i18n::text(language, key);
+            for expected in [
+                "photos-2026-09.json",
+                "photos-2026-10.json",
+                &i18n::timestamp(FIRST_DAY),
+                &i18n::timestamp(FIRST_DAY + 3 * DAY),
+                t("compare_baseline"),
+                t("compare_current"),
+                t("compare_arrow"),
+                t("compare_open_before"),
+                t("compare_open_after"),
+                t("compare_swap"),
+                t("cmp_verdict_matching"),
+            ] {
+                assert!(
+                    all.contains(expected),
+                    "{language} {size:?}: lacks {expected}"
+                );
+            }
+            for line in &texts {
+                assert!(
+                    !(line.starts_with("cmp_")
+                        || line.starts_with("compare_")
+                        || line.starts_with("import_")),
+                    "untranslated key shown: {line}"
+                );
+            }
+            let screen = context.content_rect();
+            for shape in &frame_at(&mut app, &context, vec![], size).shapes {
+                if let egui::Shape::Text(text) = &shape.shape
+                    && shape
+                        .clip_rect
+                        .intersects(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                {
+                    assert!(text.pos.x < screen.right() + 1.0, "text outside the screen");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_earlier_file_defaults_to_before_and_the_choice_stays_explicit_and_reversible() {
+    let (_files, work) = files_directory("order");
+    let (before, after) = macos_pair(&work);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let size = egui::vec2(1180.0, 900.0);
+    // Opened in the opposite order, without naming a side.
+    let mut app = ExplorerApp::empty();
+    app.open_saved(after.clone(), false);
+    settle(&mut app, &context, size);
+    app.open_saved(before.clone(), false);
+    settle(&mut app, &context, size);
+    assert_eq!(app.saved.as_ref().unwrap().name, "photos-2026-10.json");
+    assert_eq!(app.second.as_ref().unwrap().name, "photos-2026-09.json");
+    assert_eq!(
+        (app.changes.baseline, app.changes.current),
+        (View::Second, View::Saved),
+        "ordered by the recorded capture time"
+    );
+    // A choice made by hand is never reordered by later events.
+    app.swap_direction();
+    assert_eq!(
+        (app.changes.baseline, app.changes.current),
+        (View::Saved, View::Second)
+    );
+    app.settle_operands();
+    assert_eq!(app.changes.baseline, View::Saved);
+    // Picking the result that stands on the other side reverses the direction.
+    app.set_operand(compare::Side::Baseline, View::Second);
+    assert_eq!(
+        (app.changes.baseline, app.changes.current),
+        (View::Second, View::Saved)
+    );
+    // The current scan can take either side, and a missing source is ignored.
+    app.set_operand(compare::Side::Current, View::Live);
+    assert_eq!(app.changes.current, View::Saved);
+    app.live = fixture().result.clone();
+    app.set_operand(compare::Side::Current, View::Live);
+    assert_eq!(
+        (app.changes.baseline, app.changes.current),
+        (View::Second, View::Live)
+    );
+}
+
+#[test]
+fn replacing_an_operand_resets_the_diff_and_the_scope_confirmation() {
+    let (_files, work) = files_directory("replace");
+    let (before, after) = macos_pair(&work);
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = reopened(&before, &after, size);
+    app.open_changes();
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_some());
+    app.changes.selected = Some(1);
+    app.changes.confirm_scope = true;
+    let kept_before = app.saved.as_ref().unwrap().result.clone();
+    // Another file for the After side while the comparison is on screen.
+    let (_, third) = {
+        let (_, later) = two_days(macos_snapshot);
+        let later = variant(&later, |nodes| nodes[3].logical.known = 500);
+        (
+            (),
+            write_snapshot(
+                &work,
+                "photos-2026-11.json",
+                &macos_snapshot(&later, FIRST_DAY + 6 * DAY),
+            ),
+        )
+    };
+    app.open_saved_as(third, false, OpenTarget::Side(compare::Side::Current));
+    assert!(app.changes.job.is_none());
+    settle(&mut app, &context, size);
+    assert_eq!(app.view, View::Changes, "the comparison screen stays put");
+    assert_eq!(app.second.as_ref().unwrap().name, "photos-2026-11.json");
+    assert!(Arc::ptr_eq(
+        &app.saved.as_ref().unwrap().result,
+        &kept_before
+    ));
+    let changes = &app.changes;
+    assert!(changes.comparison.is_none() && changes.failure.is_none());
+    assert!(!changes.confirm_scope && changes.selected.is_none());
+    assert_eq!(
+        (changes.baseline, changes.current),
+        (View::Saved, View::Second)
+    );
+    // The screen offers a fresh start with the new file and date named.
+    let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size)).join("\n");
+    assert!(texts.contains("photos-2026-11.json"));
+    assert!(texts.contains(&i18n::timestamp(FIRST_DAY + 6 * DAY)));
+    assert!(!texts.contains("photos-2026-10.json"));
+    // Choosing another source by hand resets as well.
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_some());
+    app.live = fixture().result.clone();
+    app.set_operand(compare::Side::Current, View::Live);
+    assert!(app.changes.comparison.is_none() && !app.changes.confirm_scope);
+    // The replaced result is no longer held by the browsing state.
+    app.show(View::Second);
+    app.open_saved_as(
+        before.clone(),
+        false,
+        OpenTarget::Side(compare::Side::Baseline),
+    );
+    settle(&mut app, &context, size);
+    assert_eq!(app.saved.as_ref().unwrap().name, "photos-2026-09.json");
+    assert!(
+        Arc::strong_count(&kept_before) == 1,
+        "the old Before was released"
+    );
+}
+
+#[test]
+fn a_result_for_replaced_operands_is_never_published() {
+    let (_files, work) = files_directory("stale");
+    let (before, after) = macos_pair(&work);
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = reopened(&before, &after, size);
+    let wait_for_worker = || std::thread::sleep(Duration::from_millis(400));
+
+    // Direction changed after the worker finished, before the result was collected.
+    app.start_compare();
+    wait_for_worker();
+    app.swap_direction();
+    settle(&mut app, &context, size);
+    assert!(app.changes.comparison.is_none() && app.changes.job.is_none());
+    assert_eq!(
+        (app.changes.baseline, app.changes.current),
+        (View::Second, View::Saved)
+    );
+
+    // A file replaced after the worker finished.
+    app.start_compare();
+    wait_for_worker();
+    app.open_saved_as(
+        before.clone(),
+        false,
+        OpenTarget::Side(compare::Side::Current),
+    );
+    assert!(app.changes.job.is_none(), "a new open cancels the diff");
+    settle(&mut app, &context, size);
+    assert!(app.changes.comparison.is_none());
+
+    // Even a job nobody cancelled is checked against the operands now chosen.
+    let stale_baseline = app.operand(View::Saved).unwrap();
+    let stale_current = Arc::new((*app.operand(View::Second).unwrap()).clone());
+    app.changes.job = Some(crate::job::compare(
+        stale_baseline,
+        stale_current,
+        true,
+        usize::MAX,
+    ));
+    settle(&mut app, &context, size);
+    assert!(app.changes.comparison.is_none() && app.changes.failure.is_none());
+
+    // A diff that was cancelled by the user delivers nothing and reports nothing.
+    app.start_compare();
+    app.changes.job = None;
+    settle(&mut app, &context, size);
+    assert!(app.changes.comparison.is_none() && app.changes.failure.is_none());
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_some());
+}
+
+#[test]
+fn a_newer_open_supersedes_an_older_one_and_a_cancelled_open_changes_nothing() {
+    let (_files, work) = files_directory("supersede");
+    let (before, after) = macos_pair(&work);
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = ExplorerApp::empty();
+    app.open_saved_as(
+        before.clone(),
+        false,
+        OpenTarget::Side(compare::Side::Baseline),
+    );
+    app.open_saved_as(
+        after.clone(),
+        false,
+        OpenTarget::Side(compare::Side::Baseline),
+    );
+    settle(&mut app, &context, size);
+    assert_eq!(app.saved.as_ref().unwrap().name, "photos-2026-10.json");
+    assert!(app.second.is_none(), "the superseded file left no trace");
+    // Cancelling while reading keeps what was open.
+    let shown = app.result.clone().unwrap();
+    app.open_saved_as(before, false, OpenTarget::Side(compare::Side::Current));
+    app.open_job = None;
+    settle(&mut app, &context, size);
+    assert!(app.second.is_none() && app.open_error.is_none());
+    assert!(Arc::ptr_eq(app.result.as_ref().unwrap(), &shown));
+}
+
+#[test]
+fn a_second_file_that_does_not_fit_beside_the_first_is_refused_and_explained() {
+    let (_files, work) = files_directory("joint-open");
+    let (before, after) = macos_pair(&work);
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = ExplorerApp::empty();
+    app.language = 0;
+    app.phone_home = false;
+    app.open_saved_as(before, false, OpenTarget::Side(compare::Side::Baseline));
+    settle(&mut app, &context, size);
+    let first = app.saved.as_ref().unwrap().result.clone();
+    let shown = app.result.clone().unwrap();
+    // What the second file needs on its own, found by bisection on the importer.
+    let needed = {
+        let admitted = |limit: usize| {
+            crate::import::import_file(
+                &after,
+                crate::import::Limits {
+                    memory_limit: limit,
+                    ..crate::import::Limits::platform()
+                },
+                &std::sync::atomic::AtomicBool::new(false),
+                &std::sync::atomic::AtomicU64::new(0),
+            )
+            .is_ok()
+        };
+        let (mut refused, mut accepted) = (0_usize, 64 << 20);
+        assert!(admitted(accepted) && !admitted(refused));
+        while refused + 1 < accepted {
+            let middle = (refused + accepted) / 2;
+            if admitted(middle) {
+                accepted = middle;
+            } else {
+                refused = middle;
+            }
+        }
+        accepted
+    };
+    let held = app.held_bytes();
+    assert!(held >= first.retained_bytes(), "the open result is counted");
+    // Enough for the file alone, not for the file next to what is held.
+    app.memory_budget = Some(held + needed - 1);
+    app.open_saved_as(
+        after.clone(),
+        false,
+        OpenTarget::Side(compare::Side::Current),
+    );
+    settle(&mut app, &context, size);
+    assert_eq!(
+        app.open_error,
+        Some(crate::import::ImportError::MemoryLimit)
+    );
+    assert!(app.second.is_none());
+    assert!(Arc::ptr_eq(&app.saved.as_ref().unwrap().result, &first));
+    assert!(Arc::ptr_eq(app.result.as_ref().unwrap(), &shown));
+    assert_eq!(app.view, View::Saved);
+    for size in [size, egui::vec2(360.0, 800.0)] {
+        let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size));
+        for key in ["import_failed", "import_error_memory", "import_kept_open"] {
+            assert!(texts.iter().any(|t| t == i18n::text(0, key)), "{key}");
+        }
+    }
+    app.open_error = None;
+    // Exactly enough is accepted.
+    app.memory_budget = Some(held + needed);
+    app.open_saved_as(after, false, OpenTarget::Side(compare::Side::Current));
+    settle(&mut app, &context, size);
+    assert!(app.open_error.is_none());
+    assert_eq!(app.second.as_ref().unwrap().name, "photos-2026-10.json");
+    assert!(Arc::ptr_eq(&app.saved.as_ref().unwrap().result, &first));
+}
+
+#[test]
+fn a_diff_that_does_not_fit_leaves_both_files_open_and_a_larger_allowance_succeeds() {
+    let (_files, work) = files_directory("joint-diff");
+    let (before, after) = macos_pair(&work);
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = reopened(&before, &after, size);
+    app.open_changes();
+    let (baseline, current) = (
+        app.saved.as_ref().unwrap().result.clone(),
+        app.second.as_ref().unwrap().result.clone(),
+    );
+    let needed = {
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let admitted = |limit: usize| {
+            compare::compare_within(baseline.clone(), current.clone(), false, &flag, limit).is_ok()
+        };
+        let (mut refused, mut accepted) = (0_usize, 64 << 20);
+        assert!(admitted(accepted) && !admitted(refused));
+        while refused + 1 < accepted {
+            let middle = (refused + accepted) / 2;
+            if admitted(middle) {
+                accepted = middle;
+            } else {
+                refused = middle;
+            }
+        }
+        accepted
+    };
+    let held = app.held_bytes();
+    app.memory_budget = Some(held + needed - 1);
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_none() && app.changes.job.is_none());
+    assert!(matches!(
+        app.changes.failure,
+        Some(saved::CompareFailure::Other("compare_memory_limit"))
+    ));
+    assert!(Arc::ptr_eq(&app.saved.as_ref().unwrap().result, &baseline));
+    assert!(Arc::ptr_eq(&app.second.as_ref().unwrap().result, &current));
+    for size in [size, egui::vec2(360.0, 800.0)] {
+        let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size));
+        for key in ["compare_memory_limit", "import_kept_open"] {
+            assert!(
+                texts.iter().any(|t| t == i18n::text(0, key)),
+                "{key} at {size:?}"
+            );
+        }
+        // Both files can still be browsed after the refusal.
+    }
+    app.show(View::Second);
+    assert!(Arc::ptr_eq(app.result.as_ref().unwrap(), &current));
+    app.open_changes();
+    app.memory_budget = Some(held + needed);
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_some() && app.changes.failure.is_none());
+    // A finished diff counts as held, so a third file must fit beside it.
+    assert!(app.held_bytes() >= held + app.changes.comparison.as_ref().unwrap().retained_bytes());
+}
+
+#[test]
+fn partial_older_and_incompatible_files_follow_the_scope_rules_in_both_directions() {
+    let (_files, work) = files_directory("rules");
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let complete = fixture().result.clone().unwrap();
+
+    // Partial: Photos was not listed to the end in the second file.
+    let partial = variant(&complete, |nodes| {
+        nodes.truncate(2);
+        nodes[1].complete = false;
+        nodes[1].listing_complete = Some(false);
+        nodes[0].complete = false;
+    });
+    let mut partial = macos_snapshot(&partial, FIRST_DAY + 3 * DAY);
+    // The root was listed to the end, although something below it was not.
+    partial.nodes[0].listing_complete = Some(true);
+    partial.nodes[1].listing_complete = Some(false);
+    let full = macos_snapshot(&complete, FIRST_DAY);
+    let files = (
+        write_snapshot(&work, "full.json", &full),
+        write_snapshot(&work, "partial.json", &partial),
+    );
+    let mut app = reopened(&files.0, &files.1, size);
+    app.open_changes();
+    start_and_settle(&mut app, size);
+    let forward = app.changes.comparison.clone().unwrap();
+    let totals = forward.totals(Dimension::Logical);
+    // notes.txt was in a fully listed folder and is missing; Trips is only "not observed".
+    assert_eq!((totals.removed, totals.removed_count), (20, 1));
+    // Photos itself (listing incomplete) and Trips (not observed in it).
+    assert_eq!(totals.unknown_count, 2);
+    assert!(!totals.is_complete());
+    let trips = row_of(&forward, "Trips");
+    assert_eq!(
+        forward.event_status(trips, Dimension::Logical),
+        Status::Unknown
+    );
+    assert_eq!(
+        forward.nodes[trips].reason(Dimension::Logical),
+        compare::Reason::CurrentNotObserved
+    );
+    let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size)).join("\n");
+    assert!(texts.contains(i18n::text(0, "cmp_tile_net_partial")));
+    assert!(texts.contains(i18n::text(0, "cmp_limit_current_partial")));
+    assert!(!texts.contains(i18n::text(0, "cmp_net_complete")));
+    // Reversed: the partial file is Before. The same object is still not "new".
+    app.swap_direction();
+    start_and_settle(&mut app, size);
+    let back = app.changes.comparison.clone().unwrap();
+    let totals = back.totals(Dimension::Logical);
+    assert_eq!((totals.added, totals.added_count), (20, 1));
+    assert_eq!((totals.removed, totals.unknown_count), (0, 2));
+    assert_eq!(
+        back.nodes[row_of(&back, "Trips")].reason(Dimension::Logical),
+        compare::Reason::BaselineNotObserved
+    );
+    assert_eq!(net(&app), 20);
+    assert!(
+        rendered_texts(&frame_at(&mut app, &context, vec![], size))
+            .iter()
+            .any(|t| t.contains(i18n::text(0, "cmp_limit_baseline_partial")))
+    );
+
+    // Older schema: no identity recorded, so a person must confirm.
+    let older = {
+        let (before, after) = two_days(|result, started| {
+            let mut copy = result.clone();
+            copy.started_unix_seconds = started;
+            copy
+        });
+        (
+            write_snapshot(&work, "old-1.json", &before),
+            write_snapshot(&work, "old-2.json", &after),
+        )
+    };
+    let mut app = reopened(&older.0, &older.1, size);
+    assert_eq!(app.saved.as_ref().unwrap().result.schema_version, 1);
+    let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size));
+    app.open_changes();
+    let texts =
+        rendered_texts(&frame_at(&mut app, &context, vec![], size)).join("\n") + &texts.join("");
+    for key in [
+        "cmp_verdict_insufficient",
+        "compare_confirm_scope",
+        "saved_schema_one",
+    ] {
+        assert!(texts.contains(i18n::text(0, key)), "{key}");
+    }
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_none());
+    assert!(matches!(
+        app.changes.failure,
+        Some(saved::CompareFailure::Other("cmp_needs_confirmation"))
+    ));
+    app.changes.confirm_scope = true;
+    start_and_settle(&mut app, size);
+    let forward = net(&app);
+    let limits = app.changes.comparison.clone().unwrap().limitations.clone();
+    assert!(limits.contains(&compare::Limitation::OlderSchema));
+    assert!(limits.contains(&compare::Limitation::ScopeConfirmedByUser));
+    app.swap_direction();
+    assert!(
+        !app.changes.confirm_scope,
+        "the confirmation belongs to one direction"
+    );
+    start_and_settle(&mut app, size);
+    assert!(
+        app.changes.comparison.is_none(),
+        "no result without a new confirmation"
+    );
+    app.changes.confirm_scope = true;
+    start_and_settle(&mut app, size);
+    assert_eq!(net(&app), -forward);
+
+    // Incompatible areas are never compared, whatever was confirmed.
+    let elsewhere = {
+        let mut other = macos_snapshot(&complete, FIRST_DAY + 3 * DAY);
+        other.scope = "/Users/test/Elsewhere".into();
+        other.nodes[0].locator = other.scope.clone();
+        other.nodes[0].native_locator = other.scope.clone();
+        other.scope_identity.as_mut().unwrap().root = other.scope.clone();
+        write_snapshot(&work, "elsewhere.json", &other)
+    };
+    let mut app = reopened(&files.0, &elsewhere, size);
+    let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size));
+    app.open_changes();
+    let texts =
+        rendered_texts(&frame_at(&mut app, &context, vec![], size)).join("\n") + &texts.join("");
+    assert!(texts.contains(i18n::text(0, "cmp_verdict_incompatible")));
+    assert!(!texts.contains(i18n::text(0, "compare_confirm_scope")));
+    app.changes.confirm_scope = true;
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_none());
+    assert!(matches!(
+        app.changes.failure,
+        Some(saved::CompareFailure::Incompatible(_))
+    ));
+    app.swap_direction();
+    start_and_settle(&mut app, size);
+    assert!(matches!(
+        app.changes.failure,
+        Some(saved::CompareFailure::Incompatible(_))
+    ));
+}
+
+#[test]
+fn snapshots_recorded_on_android_compare_on_this_host_but_not_with_a_local_scan() {
+    let (_files, work) = files_directory("android");
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let (day1, day2) = two_days(android_snapshot);
+    let files = (
+        write_snapshot(&work, "pixel-day1.json", &day1),
+        write_snapshot(&work, "pixel-day2.json", &day2),
+    );
+    let mut app = reopened(&files.0, &files.1, size);
+    app.open_changes();
+    let texts = rendered_texts(&frame_at(&mut app, &context, vec![], size)).join("\n");
+    assert!(texts.contains(i18n::text(0, "cmp_verdict_matching")));
+    assert!(!texts.contains(i18n::text(0, "compare_confirm_scope")));
+    start_and_settle(&mut app, size);
+    let comparison = app
+        .changes
+        .comparison
+        .clone()
+        .expect("no confirmation needed");
+    let totals = comparison.totals(Dimension::Logical);
+    assert_eq!((totals.added, totals.removed, totals.grown), (0, 400, 40));
+    // The host's own scan is another kind of area, even under the same root name.
+    let (_, local) = two_days(macos_snapshot);
+    let local = write_snapshot(&work, "mac.json", &local);
+    app.open_saved_as(local, false, OpenTarget::Side(compare::Side::Current));
+    settle(&mut app, &context, size);
+    assert!(app.changes.comparison.is_none());
+    app.changes.confirm_scope = true;
+    start_and_settle(&mut app, size);
+    assert!(matches!(
+        app.changes.failure,
+        Some(saved::CompareFailure::Incompatible(_))
+    ));
+}
+
+#[test]
+fn a_saved_result_still_compares_with_the_current_scan_next_to_a_second_file() {
+    let (_files, work) = files_directory("with-live");
+    let (before, after) = macos_pair(&work);
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = ExplorerApp::empty();
+    app.language = 0;
+    app.phone_home = false;
+    app.live = Some(Arc::new(macos_snapshot(
+        fixture().result.as_ref().unwrap(),
+        FIRST_DAY + 9 * DAY,
+    )));
+    app.open_saved(before, false);
+    settle(&mut app, &context, size);
+    // One file and a scan: the original pairing, file first.
+    assert_eq!(
+        (app.changes.baseline, app.changes.current),
+        (View::Saved, View::Live)
+    );
+    app.compare_with_current(View::Saved);
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_some());
+    let kept = app.changes.comparison.clone().unwrap();
+    // A second file does not disturb a pairing that is still possible.
+    app.open_saved(after, false);
+    settle(&mut app, &context, size);
+    assert_eq!(app.second.as_ref().unwrap().name, "photos-2026-10.json");
+    assert_eq!(
+        (app.changes.baseline, app.changes.current),
+        (View::Saved, View::Live)
+    );
+    assert!(
+        app.changes.comparison.is_none(),
+        "a new file always resets the diff"
+    );
+    drop(kept);
+    // A new scan forgets only comparisons that used it.
+    app.set_operand(compare::Side::Current, View::Second);
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_some());
+    let folder = preferences::tests::Fixture::new()
+        .path()
+        .with_extension("rescan");
+    std::fs::create_dir_all(&folder).unwrap();
+    app.start(folder.clone());
+    assert!(app.live.is_none());
+    assert!(
+        app.changes.comparison.is_some(),
+        "a diff of two files does not depend on the scan"
+    );
+    app.job = None; // stand-in for a finished scan, injected below
+    app.live = Some(Arc::new(macos_snapshot(
+        fixture().result.as_ref().unwrap(),
+        FIRST_DAY + 9 * DAY,
+    )));
+    app.set_operand(compare::Side::Current, View::Live);
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_some());
+    app.start(folder.clone());
+    assert!(
+        app.changes.comparison.is_none(),
+        "this diff used the replaced scan"
+    );
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[test]
+fn closing_a_file_releases_it_and_removes_every_comparison_that_used_it() {
+    let (_files, work) = files_directory("close");
+    let (before, after) = macos_pair(&work);
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = reopened(&before, &after, size);
+    app.open_changes();
+    start_and_settle(&mut app, size);
+    app.goto(compare::Side::Current, 1);
+    let weak = Arc::downgrade(&app.second.as_ref().unwrap().result);
+    app.close_saved(View::Second);
+    assert!(app.second.is_none() && app.changes.comparison.is_none());
+    assert!(
+        weak.upgrade().is_none(),
+        "nothing keeps the closed file alive"
+    );
+    assert_eq!(app.view, View::Saved, "the other file is shown");
+    // The remaining file can be paired again by opening another one.
+    assert_eq!(app.changes.baseline, View::Saved);
+    app.open_saved(after, false);
+    settle(&mut app, &context, size);
+    assert_eq!(app.second.as_ref().unwrap().name, "photos-2026-10.json");
+    // Closing from the comparison screen does not leave the closed file on screen.
+    app.open_changes();
+    let weak = Arc::downgrade(&app.saved.as_ref().unwrap().result);
+    app.show(View::Saved);
+    app.open_changes();
+    app.close_saved(View::Saved);
+    assert!(weak.upgrade().is_none());
+    assert!(
+        app.result
+            .as_ref()
+            .is_none_or(|r| Arc::as_ptr(r) != weak.as_ptr())
+    );
+}
+
+#[test]
+fn the_native_comparison_page_is_driven_by_the_same_state() {
+    use crate::mobile::Command;
+    let (_files, work) = files_directory("native");
+    let (before, after) = macos_pair(&work);
+    let size = egui::vec2(360.0, 800.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = reopened(&before, &after, size);
+    let setup = app.native_setup();
+    assert_eq!(setup.before.as_ref().unwrap().name, "photos-2026-09.json");
+    assert_eq!(setup.after.as_ref().unwrap().captured, FIRST_DAY + 3 * DAY);
+    assert_eq!(
+        setup.assessment.as_ref().unwrap().verdict,
+        compare::ScopeVerdict::Matching
+    );
+    app.native_compare_command(Command::SwapDirection);
+    assert_eq!(app.changes.baseline, View::Second);
+    assert_eq!(
+        app.native_setup().before.as_ref().unwrap().name,
+        "photos-2026-10.json"
+    );
+    app.native_compare_command(Command::StartCompare);
+    assert!(app.changes.job.is_some());
+    settle(&mut app, &context, size);
+    assert!(app.changes.comparison.is_some());
+    app.native_compare_command(Command::ShowSide(compare::Side::Current));
+    assert_eq!(app.view, View::Saved);
+    app.native_compare_command(Command::ConfirmScope(true));
+    assert!(app.changes.confirm_scope);
+}
+
+#[test]
+fn several_files_given_at_once_are_read_in_turn_not_one_instead_of_the_other() {
+    let (_files, work) = files_directory("queue");
+    let (before, after) = macos_pair(&work);
+    let bad = work.join("bad.json");
+    std::fs::write(&bad, b"{").unwrap();
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    // The command line lists the later export first; the earlier one is still Before.
+    let mut app = ExplorerApp::empty();
+    app.open_results(vec![after.clone(), before.clone()]);
+    settle(&mut app, &context, size);
+    assert_eq!(app.saved.as_ref().unwrap().name, "photos-2026-10.json");
+    assert_eq!(app.second.as_ref().unwrap().name, "photos-2026-09.json");
+    assert_eq!(app.changes.baseline, View::Second);
+    // A damaged file in the list is reported and does not stop the others.
+    let mut app = ExplorerApp::empty();
+    app.open_results(vec![bad, before, after]);
+    settle(&mut app, &context, size);
+    assert!(app.open_error.is_some());
+    assert!(app.saved.is_some() && app.second.is_some());
+    // Cancelling the one being read cancels those waiting behind it.
+    let mut app = ExplorerApp::empty();
+    app.open_results(vec![
+        work.join("photos-2026-09.json"),
+        work.join("photos-2026-10.json"),
+    ]);
+    app.open_job = None;
+    app.open_queue.clear();
+    settle(&mut app, &context, size);
+    assert!(app.saved.is_none() && app.second.is_none());
+}
+
+#[test]
+fn comparing_the_shown_file_with_another_keeps_it_as_before_and_never_overwrites_it() {
+    let (_files, work) = files_directory("anchor");
+    let (before, after) = macos_pair(&work);
+    let size = egui::vec2(1180.0, 900.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = reopened(&before, &after, size);
+    app.open_changes();
+    start_and_settle(&mut app, size);
+    assert!(app.changes.comparison.is_some());
+    // Both slots are full and the later file (Second) is on screen: it stays Before.
+    app.show(View::Second);
+    let anchor = app.second.as_ref().unwrap().result.clone();
+    app.open_saved_as(
+        before.clone(),
+        false,
+        OpenTarget::Compare(compare::Side::Current, View::Second),
+    );
+    // Nothing changes until the file has been read.
+    assert_eq!(
+        (app.changes.baseline, app.changes.current),
+        (View::Saved, View::Second)
+    );
+    settle(&mut app, &context, size);
+    assert!(Arc::ptr_eq(&app.second.as_ref().unwrap().result, &anchor));
+    assert_eq!(
+        app.saved.as_ref().unwrap().result.started_unix_seconds,
+        FIRST_DAY
+    );
+    assert_eq!(
+        (app.changes.baseline, app.changes.current),
+        (View::Second, View::Saved)
+    );
+    assert_eq!(app.view, View::Changes);
+    assert!(app.changes.comparison.is_none());
+}
+
+#[test]
+fn the_phone_sheet_can_close_either_file_from_any_view() {
+    let (_files, work) = files_directory("sheet");
+    let (before, after) = macos_pair(&work);
+    let size = egui::vec2(360.0, 3000.0);
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.set_fonts(crate::fonts::definitions());
+    let mut app = reopened(&before, &after, size);
+    app.live = Some(Arc::new(macos_snapshot(
+        fixture().result.as_ref().unwrap(),
+        FIRST_DAY + 9 * DAY,
+    )));
+    app.show(View::Live);
+    app.phone_overlay = Some(PhoneOverlay::Actions);
+    let output = frame_at(&mut app, &context, vec![], size);
+    for expected in [
+        format!("{}: photos-2026-09.json", i18n::text(0, "saved_close")),
+        format!("{}: photos-2026-10.json", i18n::text(0, "saved_close")),
+        i18n::text(0, "compare_with_current").to_owned(),
+    ] {
+        assert!(rendered_texts(&output).contains(&expected), "{expected}");
+    }
+    let target = text_position(
+        &output,
+        &format!("{}: photos-2026-10.json", i18n::text(0, "saved_close")),
+    );
+    for pressed in [true, false] {
+        frame_at(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(target),
+                egui::Event::PointerButton {
+                    pos: target,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+            size,
+        );
+    }
+    assert!(app.second.is_none() && app.saved.is_some());
 }

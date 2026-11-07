@@ -82,9 +82,10 @@ pub fn open(path: PathBuf, limits: Limits, delete_after: bool) -> OpenJob {
 }
 
 /// Sample local memory after the worker acquires the heavy-job lock so that
-/// allocations from a superseded import do not affect the next open.
-pub fn open_local(path: PathBuf, delete_after: bool) -> OpenJob {
-    open_with(path, Limits::for_device, delete_after)
+/// allocations from a superseded import do not affect the next open. `held` is
+/// the estimate of what the session already retains; see `memory::operation_budget`.
+pub fn open_local(path: PathBuf, delete_after: bool, held: usize) -> OpenJob {
+    open_with(path, move || Limits::for_device_holding(held), delete_after)
 }
 
 fn open_with(
@@ -110,13 +111,38 @@ fn open_with(
     )
 }
 
+/// Compare with a memory allowance sampled when the worker starts, after any
+/// older heavy job has released its memory. `held` is what the session retains,
+/// including both operands.
+pub fn compare_local(
+    baseline: Arc<ScanResult>,
+    current: Arc<ScanResult>,
+    confirm_scope: bool,
+    held: usize,
+) -> CompareJob {
+    compare_with(baseline, current, confirm_scope, move || {
+        crate::memory::operation_budget(held)
+    })
+}
+
+/// Compare with an explicit allowance of additional bytes.
 pub fn compare(
     baseline: Arc<ScanResult>,
     current: Arc<ScanResult>,
     confirm_scope: bool,
+    limit: usize,
+) -> CompareJob {
+    compare_with(baseline, current, confirm_scope, move || limit)
+}
+
+fn compare_with(
+    baseline: Arc<ScanResult>,
+    current: Arc<ScanResult>,
+    confirm_scope: bool,
+    limit: impl FnOnce() -> usize + Send + 'static,
 ) -> CompareJob {
     Job::spawn(
-        move |cancel, _| compare::compare(baseline, current, confirm_scope, cancel),
+        move |cancel, _| compare::compare_within(baseline, current, confirm_scope, cancel, limit()),
         || Err(CompareError::Cancelled),
     )
 }

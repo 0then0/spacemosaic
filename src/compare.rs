@@ -14,11 +14,28 @@ use crate::{
 };
 use std::{
     collections::VecDeque,
+    mem::size_of,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
+
+/// Which end of a comparison a result stands at: the one changes are measured
+/// from (Before) or the one they are measured to (After).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Baseline,
+    Current,
+}
+impl Side {
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Baseline => Self::Current,
+            Self::Current => Self::Baseline,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dimension {
@@ -383,18 +400,37 @@ pub enum CompareError {
     NeedsConfirmation(ScopeAssessment),
     Incompatible(ScopeAssessment),
     TooLarge,
+    /// The estimated indexes and diff exceed the memory allowance given to the call.
+    MemoryLimit,
 }
 
 /// Children of each node as contiguous ranges; avoids a `Vec` per directory.
 struct Children {
     start: Vec<u32>,
     list: Vec<u32>,
+    /// Largest number of direct children of one node, and the directory count.
+    widest: usize,
+    directories: usize,
 }
 impl Children {
-    fn new(result: &ScanResult) -> Self {
+    /// Bytes of the two index vectors for a result with `count` nodes.
+    fn bytes(count: usize) -> usize {
+        count
+            .saturating_mul(2 * size_of::<u32>())
+            .saturating_add(size_of::<u32>())
+    }
+    fn new(result: &ScanResult) -> Option<Self> {
+        fn zeroed(len: usize) -> Option<Vec<u32>> {
+            let mut vector = Vec::new();
+            vector.try_reserve_exact(len).ok()?;
+            vector.resize(len, 0);
+            Some(vector)
+        }
         let count = result.nodes.len();
-        let mut start = vec![0_u32; count + 1];
+        let mut start = zeroed(count + 1)?;
+        let mut directories = 0;
         for node in &result.nodes {
+            directories += usize::from(node.kind == Kind::Directory);
             if let Some(parent) = node.parent {
                 start[parent + 1] += 1;
             }
@@ -402,15 +438,27 @@ impl Children {
         for index in 0..count {
             start[index + 1] += start[index];
         }
-        let mut fill = start.clone();
-        let mut list = vec![0_u32; start[count] as usize];
+        let widest = start
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]) as usize)
+            .max()
+            .unwrap_or(0);
+        // Place children using `start` as the fill cursor, then shift it back.
+        let mut list = zeroed(start[count] as usize)?;
         for (index, node) in result.nodes.iter().enumerate() {
             if let Some(parent) = node.parent {
-                list[fill[parent] as usize] = index as u32;
-                fill[parent] += 1;
+                list[start[parent] as usize] = index as u32;
+                start[parent] += 1;
             }
         }
-        Self { start, list }
+        start.copy_within(0..count, 1);
+        start[0] = 0;
+        Some(Self {
+            start,
+            list,
+            widest,
+            directories,
+        })
     }
     fn of(&self, index: usize) -> &[u32] {
         &self.list[self.start[index] as usize..self.start[index + 1] as usize]
@@ -440,14 +488,66 @@ fn child_key(result: &ScanResult, mode: Encoding, parent: usize, child: usize) -
 
 const CHECK_INTERVAL: usize = 1024;
 
-/// Compare two results. `confirm_scope` is a person's statement that the areas
-/// correspond; it can only upgrade an insufficient verdict, never an incompatible
-/// one, and it does not alter any completeness or measurement limitation.
+/// Per diff row, the interface's row list (`u32`) and a possible folder-tree
+/// entry (`u32` and depth), built after the comparison from its events.
+pub const INTERFACE_BYTES_PER_ROW: usize = size_of::<u32>() + size_of::<(u32, usize)>();
+
+/// Compare two results without a memory limit beyond what the allocator grants.
+/// `confirm_scope` is a person's statement that the areas correspond; it can
+/// only upgrade an insufficient verdict, never an incompatible one, and it does
+/// not alter any completeness or measurement limitation.
 pub fn compare(
     baseline: Arc<ScanResult>,
     current: Arc<ScanResult>,
     confirm_scope: bool,
     cancel: &AtomicBool,
+) -> Result<Comparison, CompareError> {
+    compare_within(baseline, current, confirm_scope, cancel, usize::MAX)
+}
+
+/// Grow the diff vector for at least `needed` rows. The call is refused before
+/// allocating when the fixed workspace, the old buffer (which can coexist with the
+/// new one during reallocation) and the new buffer would exceed `limit`.
+fn reserve_rows(
+    nodes: &mut Vec<DiffNode>,
+    needed: usize,
+    upper: usize,
+    fixed: usize,
+    limit: usize,
+) -> Result<(), CompareError> {
+    if needed <= nodes.capacity() {
+        return Ok(());
+    }
+    let capacity = nodes
+        .capacity()
+        .saturating_mul(2)
+        .max(needed)
+        .max(1024)
+        .min(upper)
+        .max(needed);
+    let transition = nodes
+        .capacity()
+        .saturating_add(capacity)
+        .saturating_mul(size_of::<DiffNode>());
+    if fixed.saturating_add(transition) > limit {
+        return Err(CompareError::MemoryLimit);
+    }
+    nodes
+        .try_reserve_exact(capacity - nodes.len())
+        .map_err(|_| CompareError::MemoryLimit)
+}
+
+/// Compare two results, refusing with `MemoryLimit` before any significant
+/// allocation when the estimated additional memory exceeds `limit` bytes. The
+/// estimate covers both child indexes, the sibling-key workspace, the work queue,
+/// the diff rows (including growth) and the interface's row indexes. Memory that
+/// callers already hold, such as the two results, is their business to deduct.
+pub fn compare_within(
+    baseline: Arc<ScanResult>,
+    current: Arc<ScanResult>,
+    confirm_scope: bool,
+    cancel: &AtomicBool,
+    limit: usize,
 ) -> Result<Comparison, CompareError> {
     let scope = assess_scope(&baseline, &current);
     match scope.verdict {
@@ -462,7 +562,28 @@ pub fn compare(
         return Err(CompareError::TooLarge);
     }
     let (old, new) = (&*baseline, &*current);
-    let (old_children, new_children) = (Children::new(old), Children::new(new));
+    let index = Children::bytes(old.nodes.len()).saturating_add(Children::bytes(new.nodes.len()));
+    if index > limit {
+        return Err(CompareError::MemoryLimit);
+    }
+    let (Some(old_children), Some(new_children)) = (Children::new(old), Children::new(new)) else {
+        return Err(CompareError::MemoryLimit);
+    };
+    // Every row stands for at least one object of either result.
+    let upper_rows = old.nodes.len() + new.nodes.len();
+    let keys = old_children
+        .widest
+        .saturating_add(new_children.widest)
+        .saturating_mul(size_of::<(&str, u32)>());
+    let queue_bytes = old_children
+        .directories
+        .min(new_children.directories)
+        .max(1)
+        .saturating_mul(2 * size_of::<u32>());
+    let fixed = index.saturating_add(keys).saturating_add(queue_bytes);
+    if fixed > limit {
+        return Err(CompareError::MemoryLimit);
+    }
     let mode = {
         let (a, b) = (
             encoding(&old.nodes[0].native_locator),
@@ -471,6 +592,7 @@ pub fn compare(
         if a == b { a } else { Encoding::Opaque }
     };
     let mut nodes: Vec<DiffNode> = Vec::new();
+    reserve_rows(&mut nodes, 1, upper_rows, fixed, limit)?;
     let root_form = pair_form(old.nodes[0].kind, new.nodes[0].kind);
     nodes.push(DiffNode {
         old: Some(0),
@@ -514,6 +636,8 @@ pub fn compare(
             .collect();
         old_keys.sort_unstable();
         new_keys.sort_unstable();
+        let needed = nodes.len() + old_keys.len() + new_keys.len();
+        reserve_rows(&mut nodes, needed, upper_rows, fixed, limit)?;
         let first = nodes.len() as u32;
         let push = |nodes: &mut Vec<DiffNode>,
                     old: Option<u32>,
@@ -605,6 +729,18 @@ pub fn compare(
         entry.first_child = first;
         entry.child_count = count;
         entry.own_unknown = !old_listed || !new_listed;
+    }
+    drop((old_children, new_children, queue));
+    // The row list and folder tree that browse the diff are built from it later.
+    let kept = nodes
+        .capacity()
+        .saturating_mul(size_of::<DiffNode>())
+        .saturating_add(nodes.len().saturating_mul(INTERFACE_BYTES_PER_ROW));
+    if kept > limit {
+        return Err(CompareError::MemoryLimit);
+    }
+    if nodes.capacity() - nodes.len() > nodes.len() / 4 {
+        nodes.shrink_to_fit();
     }
     let allocated_available = allocated_measured(old) && allocated_measured(new);
     for dimension in [Dimension::Logical, Dimension::Allocated] {
@@ -878,6 +1014,14 @@ pub enum ChangeSort {
 }
 
 impl Comparison {
+    /// Estimated memory kept by the diff itself and the interface's indexes over
+    /// it. The two compared results are separate and shared.
+    pub fn retained_bytes(&self) -> usize {
+        self.nodes
+            .capacity()
+            .saturating_mul(size_of::<DiffNode>())
+            .saturating_add(self.nodes.len().saturating_mul(INTERFACE_BYTES_PER_ROW))
+    }
     pub fn totals(&self, dimension: Dimension) -> Totals {
         self.totals[dimension as usize]
     }

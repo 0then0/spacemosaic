@@ -115,4 +115,7 @@ allocations. Where reliable headroom is unavailable, a bounded fallback uses
 physical RAM and current process usage when available. With neither reading,
 the fallback starts at 256 MiB on desktop or 64 MiB on mobile and other local
 limits can reduce it. The `memory` object in the file describes the source scan.
-The current result stays open if validation fails or the local budget runs out.
+Memory already held by opened results, the browsing indexes and a finished
+diff is counted together with a second file (see [comparison](comparison.md)).
+Every result that was open stays open if validation fails or the local budget
+runs out.

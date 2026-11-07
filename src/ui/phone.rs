@@ -469,10 +469,11 @@ impl ExplorerApp {
     }
     /// A compact, always-visible marker that the list is an older snapshot.
     fn saved_banner_line(&self, ui: &mut egui::Ui) {
-        if let (View::Saved, Some(saved)) = (self.view, &self.saved) {
+        if let Some(saved) = self.snapshot(self.view) {
             let text = format!(
-                "{} · {}",
+                "{} · {} · {}",
                 i18n::text(self.language, "saved_banner"),
+                saved.name,
                 i18n::timestamp(saved.result.started_unix_seconds)
             );
             ui.add(
@@ -563,16 +564,37 @@ impl ExplorerApp {
                         self.phone_overlay = None;
                         self.open_saved_dialog();
                     }
-                    if self.saved.is_some() {
+                    if self.has_snapshot() {
                         let live = self.live.is_some();
-                        for (view, key, enabled) in [
-                            (View::Live, "view_current", live),
-                            (View::Saved, "view_saved", true),
+                        let both = self.saved.is_some() && self.second.is_some();
+                        for (view, label, enabled) in [
+                            (View::Live, t("view_current").to_owned(), live),
+                            (
+                                View::Saved,
+                                if both {
+                                    self.snapshot(View::Saved)
+                                        .map(|s| s.name.clone())
+                                        .unwrap_or_default()
+                                } else {
+                                    t("view_saved").to_owned()
+                                },
+                                self.saved.is_some(),
+                            ),
+                            (
+                                View::Second,
+                                self.snapshot(View::Second)
+                                    .map(|s| s.name.clone())
+                                    .unwrap_or_default(),
+                                self.second.is_some(),
+                            ),
                         ] {
+                            if view == View::Second && !enabled {
+                                continue;
+                            }
                             if ui
                                 .add_enabled(
                                     enabled,
-                                    egui::Button::new(t(key))
+                                    egui::Button::new(label)
                                         .selected(self.view == view)
                                         .min_size(egui::vec2(ui.available_width(), 48.0)),
                                 )
@@ -582,22 +604,30 @@ impl ExplorerApp {
                                 self.show(view);
                             }
                         }
-                        if ui
-                            .add_enabled(
-                                live,
-                                egui::Button::new(t("compare_with_current"))
-                                    .min_size(egui::vec2(ui.available_width(), 48.0)),
-                            )
-                            .clicked()
-                        {
+                        let shown = if self.view.is_snapshot() {
+                            self.view
+                        } else if self.saved.is_some() {
+                            View::Saved
+                        } else {
+                            View::Second
+                        };
+                        if live && Self::phone_button(ui, t("compare_with_current")) {
+                            self.compare_with_current(shown);
+                        }
+                        if Self::phone_button(ui, t("view_changes")) {
                             self.open_changes();
                         }
                         if !live {
                             ui.label(RichText::new(t("compare_needs_scan")).small().weak());
                         }
-                        if Self::phone_button(ui, t("saved_close")) {
-                            self.phone_overlay = None;
-                            self.close_saved();
+                        for view in [View::Saved, View::Second] {
+                            let Some(name) = self.snapshot(view).map(|s| s.name.clone()) else {
+                                continue;
+                            };
+                            if Self::phone_button(ui, &format!("{}: {name}", t("saved_close"))) {
+                                self.phone_overlay = None;
+                                self.close_saved(view);
+                            }
                         }
                     }
                     self.open_status(ui);

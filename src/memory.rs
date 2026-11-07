@@ -137,25 +137,58 @@ pub fn choose(mode: BudgetMode, platform: Platform, readings: Snapshot) -> u64 {
     }
 }
 
-/// Additional allocations for parsing, validating and opening one saved result.
-pub(crate) fn import_budget() -> usize {
+/// Additional allocations one operation on saved results may make now (opening a
+/// file, building a comparison with its indexes) while the session already
+/// retains `held` estimated bytes: open results, display indexes and any diff.
+///
+/// Measured headroom (available memory, remaining group/process allowance or the
+/// process footprint) already reflects those bytes. Without any such reading the
+/// budget is a fixed allowance for the whole session, so the estimate of what is
+/// held is deducted from it.
+pub(crate) fn operation_budget(held: usize) -> usize {
     let (sample, unmeasured_group_limit) = platform::sample_for_import();
-    usize::try_from(choose_import(
+    usize::try_from(choose_operation(
         Platform::current(),
         sample,
         unmeasured_group_limit,
+        held as u64,
     ))
     .unwrap_or(usize::MAX)
 }
 
+fn choose_operation(
+    platform: Platform,
+    readings: Snapshot,
+    unmeasured_group_limit: Option<u64>,
+    held: u64,
+) -> u64 {
+    let (budget, reflects_held) = import_allowance(platform, readings, unmeasured_group_limit);
+    if reflects_held {
+        budget
+    } else {
+        budget.saturating_sub(held)
+    }
+}
+
+#[cfg(test)]
 fn choose_import(
     platform: Platform,
     readings: Snapshot,
     unmeasured_group_limit: Option<u64>,
 ) -> u64 {
+    import_allowance(platform, readings, unmeasured_group_limit).0
+}
+
+/// The allowance, and whether the readings behind it already account for memory
+/// the application currently retains.
+fn import_allowance(
+    platform: Platform,
+    readings: Snapshot,
+    unmeasured_group_limit: Option<u64>,
+) -> (u64, bool) {
     let s = readings.sanitized();
     if s.critical {
-        return 0;
+        return (0, true);
     }
     let mobile = platform.mobile();
     let has_available =
@@ -201,7 +234,9 @@ fn choose_import(
     let group_limit =
         unmeasured_group_limit.or(s.group_limit.filter(|_| s.group_headroom.is_none()));
     lower(&mut budget, group_limit.map(|l| l / 16));
-    budget
+    // A group or process allowance alone does not bound the fixed fallback.
+    let reflects_held = has_available || s.process.is_some();
+    (budget, reflects_held)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -495,6 +530,46 @@ mod tests {
             ),
             256 * MIB
         );
+    }
+
+    #[test]
+    fn operations_deduct_held_results_only_when_no_reading_reflects_them() {
+        let held = 40 * MIB;
+        // No readings: the fixed allowance covers the whole session.
+        assert_eq!(
+            choose_operation(Platform::Android, Snapshot::default(), None, held),
+            24 * MIB
+        );
+        assert_eq!(
+            choose_operation(Platform::Android, Snapshot::default(), None, 100 * MIB),
+            0,
+            "held results can exhaust the allowance, never wrap around"
+        );
+        // Measured available memory and process footprint already include them.
+        let measured = Snapshot {
+            physical: Some(8 * 1024 * MIB),
+            available: Some(2 * 1024 * MIB),
+            ..Snapshot::default()
+        };
+        assert_eq!(
+            choose_operation(Platform::Desktop, measured, None, held),
+            choose_import(Platform::Desktop, measured, None)
+        );
+        let footprint = Snapshot {
+            physical: Some(8 * 1024 * MIB),
+            process: Some(768 * MIB),
+            ..Snapshot::default()
+        };
+        assert_eq!(
+            choose_operation(Platform::Desktop, footprint, None, held),
+            256 * MIB
+        );
+        // A critical state refuses regardless of what is held.
+        let critical = Snapshot {
+            critical: true,
+            ..measured
+        };
+        assert_eq!(choose_operation(Platform::Desktop, critical, None, 0), 0);
     }
 
     #[test]

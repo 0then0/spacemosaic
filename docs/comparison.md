@@ -5,10 +5,15 @@ A comparison matches two *observations* of recorded sizes: a **baseline**
 deleted, that disk blocks were freed, or that contents are unchanged. "Same size"
 means the recorded sizes are equal; contents are never read.
 
-In 0.2 the baseline is a result opened from a file and the current result is a
-scan started in the same session; **Swap direction** reverses them. Results from
-two saved files are not compared in the interface (the core API accepts any two
-results). Nothing is stored automatically.
+Each side (**Before** and **After**) is chosen explicitly and shown with its file
+name, capture time and direction. A side can be the current scan or one of two
+opened files, so two saved exports can be compared without scanning again.
+**Swap direction** reverses them. Replacing or closing a result, or changing a
+side, discards the previous diff and the same-area confirmation; a diff made for
+other results is never shown. Opening and comparing check a joint memory
+allowance (held results, the second file, indexes and the diff) before large
+allocations; on refusal the open results stay available. Nothing is stored
+automatically.
 
 ## Is it the same area?
 
@@ -91,6 +96,25 @@ results measured them, and per object only where both values are known.
 
 ## Limits and budgets
 
-Opening and comparing run on a background thread, one at a time; both results
-and the diff stay in memory. Peak use is about two result budgets plus the diff
-(96 bytes per diff row); see [performance](performance.md).
+Opening and comparing run on a background thread, one at a time. Up to two
+opened files and the current scan can be held at once. Before each open and
+each comparison the held memory (every distinct result, the browsing indexes of
+the result on screen and a finished diff) is estimated and admitted together
+with the new allocation:
+
+- Where the platform reports available memory or the process footprint, those
+  readings already include what is held, so the local allowance is used as is.
+- Without such readings the allowance is fixed for the whole session and the
+  estimate of held memory is deducted from it.
+
+A comparison estimates both child indexes, the sibling-key workspace, the work
+queue, the diff rows (96 bytes each, including buffer growth) and the row and
+tree indexes the interface builds (20 bytes per row). It refuses with a memory
+message before allocating when the estimate exceeds the allowance. A refused
+open or comparison leaves every opened result available. The `memory` object in
+a file describes its source scan and is never used as a local limit.
+
+Opening a file for one side, closing a file, choosing another source or
+swapping the direction discards the diff and the same-area confirmation. A new
+open cancels a comparison in progress. A scan replaces the current scan only;
+a diff of two opened files stays.

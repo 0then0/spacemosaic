@@ -132,6 +132,26 @@ bridges type-checks for `aarch64-linux-android` and `aarch64-apple-ios`
 device test. The Java and Swift changes were only syntax-checked
 (`swiftc -parse`; `javac` cannot resolve Android classes without an SDK).
 
+Comparing two opened files is additionally covered by: two real scans of one
+folder exported, the app replaced by a fresh instance, both files opened and
+compared (dates, direction, totals, jump into the matching file, swap); explicit
+and default (capture time) Before/After; replacing, closing and superseding
+operands, including a finished but unpublished background diff and one for
+operands no longer chosen; refusal of a second file and of a diff by a joint
+allowance found by bisection (exact byte boundary, open results kept, message on
+desktop and phone); partial, schema 1 and incompatible files in both directions;
+Android-recorded snapshots compared on the host and refused against a local scan
+(a fixture, not a device); files given together; and the native comparison page
+and commands.
+
+### Two Android snapshots on a Pixel 8 (not yet performed)
+
+No device was available. The platform check is a fixture only. On a Pixel 8 with
+Android 17 and a separate test folder: scan it, export JSON; add a file, change a
+size and remove an object; scan and export again; copy both to the Mac, open
+them (File dialog or `spacemosaic a.json b.json`) and confirm the "same area"
+verdict reads Matching, the dates, direction, totals and the jump into each file.
+
 ### Saved-result acceptance on devices (not yet performed)
 
 1. Scan a disposable folder with a nested folder and an unreadable one; export JSON.

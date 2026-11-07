@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Compare two saved JSON snapshots without scanning: choose Before and After explicitly (current scan or either of two opened files), with file names, capture dates and direction shown.
+- Check a joint memory allowance (held results, the second file, indexes and the diff) before large allocations; on refusal the open snapshots stay available with a clear reason.
+- Replacing a result or changing a side resets the diff and the same-area confirmation; stale background results are never shown.
+- Several files given on the command line or dropped together are read in turn.
+- Add the same controls to the Android and iOS accessibility browsers.
+
 ## v0.3.2 — 2026-11-06
 
 - Reopen large JSON snapshots with a memory budget based on the device opening them.

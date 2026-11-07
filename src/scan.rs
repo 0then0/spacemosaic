@@ -714,6 +714,16 @@ pub enum Sort {
     Name,
 }
 impl ScanResult {
+    /// Estimated heap retained by this result: node vector capacity, owned strings
+    /// and metadata, with the scanner's allocator allowance. An estimate for
+    /// admission decisions, not a measurement of the process.
+    pub fn retained_bytes(&self) -> usize {
+        self.nodes.iter().fold(
+            bytes::<Node>(self.nodes.capacity()).saturating_add(result_heap(self)),
+            |total, node| total.saturating_add(node_heap(node)),
+        )
+    }
+
     /// Translation key for a partial traversal; absent for a completed traversal.
     pub fn incomplete_reason(&self) -> Option<&'static str> {
         if self.cancelled {

@@ -82,14 +82,21 @@ impl ExplorerApp {
             live: None,
             view: View::Live,
             saved: None,
+            second: None,
             open_job: None,
             open_name: String::new(),
+            open_target: OpenTarget::Auto,
+            open_queue: Default::default(),
             open_error: None,
             changes: Changes::default(),
             #[cfg(test)]
             map_panel_id: None,
             #[cfg(any(target_os = "android", target_os = "ios"))]
             native_open: None,
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            native_open_target: OpenTarget::Auto,
+            #[cfg(test)]
+            memory_budget: None,
             scope: None,
             provider_scope: None,
             navigation: navigation::NavigationState::default(),
@@ -154,7 +161,7 @@ impl ExplorerApp {
         self.scope = Some(path);
         self.view = View::Live;
         self.live = None;
-        self.changes.clear();
+        self.live_changed();
         self.result = None;
         self.navigation.selected = None;
         self.navigation.directory = 0;
@@ -191,7 +198,7 @@ impl ExplorerApp {
         self.scope = None;
         self.view = View::Live;
         self.live = None;
-        self.changes.clear();
+        self.live_changed();
         self.result = None;
         self.navigation.selected = None;
         self.navigation.directory = 0;
@@ -252,7 +259,7 @@ impl ExplorerApp {
             self.job = None;
             self.view = View::Live;
             self.live = None;
-            self.changes.clear();
+            self.live_changed();
             self.result = None;
             self.provider_scope = None;
             self.preview = None;
@@ -351,7 +358,7 @@ impl ExplorerApp {
                     self.result = None;
                 }
                 self.live = None;
-                self.changes.clear();
+                self.live_changed();
                 self.provider_scope = None;
             }
             if let Some(command) = crate::mobile::take_command() {
@@ -387,6 +394,11 @@ impl ExplorerApp {
                             self.open_saved_dialog();
                         }
                     }
+                    Command::OpenFor(_)
+                    | Command::SwapDirection
+                    | Command::ConfirmScope(_)
+                    | Command::StartCompare
+                    | Command::ShowSide(_) => self.native_compare_command(command),
                     Command::Allocated(allocated) => {
                         self.allocated = allocated
                             && self.result.as_ref().is_some_and(|r| {
@@ -426,6 +438,7 @@ impl ExplorerApp {
         if let Some(result) = self.job.as_ref().and_then(scan::Job::take) {
             let result = Arc::new(result);
             self.live = Some(result.clone());
+            self.settle_operands();
             self.job = None;
             if self.view == View::Live {
                 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -1152,21 +1165,28 @@ impl ExplorerApp {
         #[cfg(target_os = "ios")]
         crate::ios::install_accessibility();
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        for path in ui.ctx().input(|i| {
-            i.raw
-                .dropped_files
-                .iter()
-                .map(|f| f.path().to_path_buf())
-                .collect::<Vec<_>>()
-        }) {
-            if path.is_dir() {
-                self.start(path);
-            } else if path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-            {
-                self.open_saved(path, false);
+        {
+            let dropped: Vec<PathBuf> = ui.ctx().input(|i| {
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .map(|f| f.path().to_path_buf())
+                    .collect()
+            });
+            let (folders, files): (Vec<_>, Vec<_>) =
+                dropped.into_iter().partition(|path| path.is_dir());
+            if let Some(folder) = folders.into_iter().next_back() {
+                self.start(folder);
             }
+            self.open_results(
+                files
+                    .into_iter()
+                    .filter(|path| {
+                        path.extension()
+                            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+                    })
+                    .collect(),
+            );
         }
         if ui
             .ctx()

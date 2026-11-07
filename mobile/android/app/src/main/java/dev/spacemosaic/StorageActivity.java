@@ -369,6 +369,8 @@ public final class StorageActivity extends NativeActivity {
         addText(text("mobile_scope")); addText(text("size_caveat")); addText(text(status)); addText(page.optString("summary"));
         if (!page.isNull("error")) addText(text(page.optString("error")));
         if (page.has("name")) addText(page.optString("name"));
+        JSONObject compare = mode.equals("changes") ? page.optJSONObject("compare") : null;
+        if (compare != null) renderCompareSetup(compare);
         if (allocated && !page.optBoolean("allocated_available", true)) addText(text("allocated_unavailable"));
         parent = page.optLong("parent", 0);
         if (directory != 0) browserRows.addView(button("back", () -> navigate(directories.isEmpty() ? parent : directories.removeLast(), false)));
@@ -389,6 +391,27 @@ public final class StorageActivity extends NativeActivity {
         if (page.optBoolean("has_more")) browserRows.addView(button("next_page", () -> { offsets.addLast(offset); offset = nextOffset; refreshBrowser(); }));
         browserRows.addView(button("refresh_result", this::refreshBrowser));
         if (status.equals("scanning") || (status.equals("waiting") && !pickerOpen && lastMessage != null && lastMessage.optString("status").equals("ready"))) handler.postDelayed(this::refreshBrowser, 500);
+    }
+    /** Choice of Before and After for comparing two results; all state lives in Rust. */
+    private void renderCompareSetup(JSONObject compare) {
+        JSONArray lines = compare.optJSONArray("lines");
+        if (lines != null) for (int i = 0; i < lines.length(); i++) addText(lines.optString(i));
+        browserRows.addView(button("compare_open_before", () -> command("open_before")));
+        browserRows.addView(button("compare_open_after", () -> command("open_after")));
+        if (compare.optBoolean("can_swap")) browserRows.addView(button("compare_swap", () -> command("swap_direction")));
+        if (compare.optBoolean("can_show_before")) browserRows.addView(button("cmp_show_baseline", () -> command("show_before")));
+        if (compare.optBoolean("can_show_after")) browserRows.addView(button("cmp_show_current", () -> command("show_after")));
+        if (compare.optBoolean("needs_confirmation")) {
+            android.widget.CheckBox confirm = new android.widget.CheckBox(viewContext());
+            confirm.setText(text("compare_confirm_scope")); confirm.setChecked(compare.optBoolean("confirmed"));
+            confirm.setOnCheckedChangeListener((box, checked) -> {
+                setting("confirm_scope", checked ? 1 : 0); handler.postDelayed(this::refreshBrowser, 250);
+            });
+            browserRows.addView(confirm);
+        }
+        Button start = button("compare_start", () -> command("start_compare"));
+        start.setEnabled(compare.optBoolean("can_start"));
+        browserRows.addView(start);
     }
     private void setting(String command, int index) {
         try { resultPage(new JSONObject().put("command", command).put("index",index).toString()); }

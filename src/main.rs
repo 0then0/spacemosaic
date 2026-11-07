@@ -31,16 +31,16 @@ fn main() -> eframe::Result {
                 spacemosaic_register_about_icon();
             }
             let mut app = spacemosaic::ui::ExplorerApp::new(cc);
-            for path in paths {
-                let saved = path.is_file()
+            let (files, folders): (Vec<_>, Vec<_>) = paths.into_iter().partition(|path| {
+                path.is_file()
                     && path
                         .extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("json"));
-                if saved {
-                    app.open_result(path);
-                } else {
-                    app.start(path);
-                }
+                        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+            });
+            // Files are read one after another, so two exports can be given together.
+            app.open_results(files);
+            for folder in folders {
+                app.start(folder);
             }
             Ok(Box::new(app))
         }),

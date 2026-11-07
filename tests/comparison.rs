@@ -663,3 +663,174 @@ fn kinds_survive_in_rows_for_navigation() {
     let fresh = find(&comparison, "fresh");
     assert_eq!(comparison.kinds(fresh), (None, Some(Kind::Directory)));
 }
+
+// ----- Two saved files, memory allowance, portability -----
+
+/// Smallest allowance `compare_within` admits, found by bisection. The check is
+/// monotonic in the allowance, so this is the estimate for this pair.
+fn minimal_allowance(old: &Arc<scan::ScanResult>, new: &Arc<scan::ScanResult>) -> usize {
+    let flag = AtomicBool::new(false);
+    let admitted =
+        |limit| compare::compare_within(old.clone(), new.clone(), true, &flag, limit).is_ok();
+    let (mut refused, mut accepted) = (0_usize, 256 * MIB as usize);
+    assert!(admitted(accepted), "256 MiB must be enough for a test tree");
+    assert!(!admitted(refused));
+    while refused + 1 < accepted {
+        let middle = refused + (accepted - refused) / 2;
+        if admitted(middle) {
+            accepted = middle;
+        } else {
+            refused = middle;
+        }
+    }
+    accepted
+}
+
+#[test]
+fn comparison_is_refused_before_allocating_beyond_its_allowance() {
+    let (old, new) = growth_fixture();
+    let (old, new) = (Arc::new(old), Arc::new(new));
+    let flag = AtomicBool::new(false);
+    let needed = minimal_allowance(&old, &new);
+    let refused = compare::compare_within(old.clone(), new.clone(), true, &flag, needed - 1);
+    assert_eq!(refused.unwrap_err(), CompareError::MemoryLimit);
+    let admitted = compare::compare_within(old.clone(), new.clone(), true, &flag, needed).unwrap();
+    let unlimited = compare::compare(old.clone(), new.clone(), true, &flag).unwrap();
+    assert_eq!(admitted.totals(LOGICAL), unlimited.totals(LOGICAL));
+    assert_eq!(admitted.nodes.len(), unlimited.nodes.len());
+    // The estimate covers what the finished diff and its interface indexes keep.
+    assert!(admitted.retained_bytes() <= needed);
+    // Scope verdicts come first: no allowance turns an incompatible pair into a memory error.
+    let mut elsewhere = Builder::fs("/other");
+    elsewhere.file(0, "a", 1);
+    let elsewhere = Arc::new(elsewhere.build());
+    assert!(matches!(
+        compare::compare_within(old.clone(), elsewhere, true, &flag, 0),
+        Err(CompareError::Incompatible(_))
+    ));
+}
+
+#[test]
+fn the_allowance_grows_with_the_widest_folder_and_the_row_count() {
+    let wide = |files: usize, grow: u64| {
+        let mut b = Builder::fs("/data");
+        for i in 0..files {
+            b.file(0, &format!("f{i}"), 1 + grow * (i as u64 % 3));
+        }
+        Arc::new(b.build())
+    };
+    let small = minimal_allowance(&wide(100, 0), &wide(100, 1));
+    let large = minimal_allowance(&wide(20_000, 0), &wide(20_000, 1));
+    // Sibling keys of both sides (24 bytes each) plus 20,000 diff rows.
+    assert!(large >= 2 * 20_000 * 24, "{large}");
+    assert!(large > small * 50, "{small} -> {large}");
+}
+
+#[test]
+fn a_cancelled_comparison_publishes_no_diff() {
+    let tree = |extra: u64| {
+        let mut b = Builder::fs("/data");
+        for i in 0..2_500 {
+            let dir = b.dir(0, &format!("d{i}"));
+            b.file(dir, "f", 1 + extra);
+        }
+        Arc::new(b.build())
+    };
+    let (old, new) = (tree(0), tree(1));
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        compare::compare_within(old.clone(), new.clone(), true, &cancelled, usize::MAX)
+            .unwrap_err(),
+        CompareError::Cancelled
+    );
+    assert!(compare::compare_within(old, new, true, &AtomicBool::new(false), usize::MAX).is_ok());
+}
+
+fn exported(directory: &std::path::Path, name: &str, result: &scan::ScanResult) -> PathBuf {
+    let path = directory.join(name);
+    scan::write_export(result, &path, true).unwrap();
+    path
+}
+fn imported(path: &std::path::Path) -> Arc<scan::ScanResult> {
+    Arc::new(
+        spacemosaic::import::import_file(
+            path,
+            spacemosaic::import::Limits::DESKTOP,
+            &AtomicBool::new(false),
+            &std::sync::atomic::AtomicU64::new(0),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn android_snapshots_compare_on_any_host_by_their_recorded_source() {
+    let folder =
+        std::env::temp_dir().join(format!("spacemosaic-android-pair-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&folder);
+    fs::create_dir_all(&folder).unwrap();
+    let root = "content://com.android.externalstorage.documents/tree/primary%3ATest/document/primary%3ATest";
+    let snapshot = |day: u64, tail: u64, extra: bool| {
+        let mut b = Builder::provider(root);
+        let sub = b.dir(0, "Sub");
+        b.file(sub, "keep.bin", 10 * MIB);
+        b.file(sub, "grows.bin", tail * MIB);
+        if extra {
+            b.file(0, "new.bin", 3 * MIB);
+        } else {
+            b.file(0, "gone.bin", 9 * MIB);
+        }
+        let mut result = b.build();
+        result.started_unix_seconds = 1_790_000_000 + day * 86_400;
+        result
+    };
+    let before = exported(&folder, "pixel-day1.json", &snapshot(0, 4, false));
+    let after = exported(&folder, "pixel-day2.json", &snapshot(2, 6, true));
+    let (before, after) = (imported(&before), imported(&after));
+    assert_eq!(before.scope_identity.as_ref().unwrap().platform, "android");
+    let assessment = assess_scope(&before, &after);
+    assert_eq!(assessment.verdict, ScopeVerdict::Matching);
+    let comparison = compare::compare(
+        before.clone(),
+        after.clone(),
+        false,
+        &AtomicBool::new(false),
+    )
+    .expect("no confirmation is needed: the recorded source decides");
+    assert_eq!(status(&comparison, "Sub/grows.bin"), Status::Grew);
+    assert_eq!(status(&comparison, "gone.bin"), Status::Removed);
+    assert_eq!(status(&comparison, "new.bin"), Status::Added);
+    assert_eq!(status(&comparison, "Sub/keep.bin"), Status::SameSize);
+    let totals = comparison.totals(LOGICAL);
+    assert_eq!(
+        (totals.added, totals.removed, totals.grown),
+        (3 * MIB as u128, 9 * MIB as u128, 2 * MIB as u128)
+    );
+    assert_eq!(totals.net(), -(4 * MIB as i128));
+    assert!(totals.is_complete());
+    // Providers do not report allocation, so that dimension is not offered.
+    assert!(!comparison.allocated_available);
+    // Reversing the pair inverts every amount.
+    let back = compare::compare(
+        after.clone(),
+        before.clone(),
+        false,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(status(&back, "gone.bin"), Status::Added);
+    assert_eq!(back.totals(LOGICAL).net(), 4 * MIB as i128);
+    // A filesystem snapshot from the host is a different kind of area and stays so.
+    let mut local = Builder::fs("/Users/test/Pixel");
+    local.file(0, "a", 1);
+    let local = Arc::new(local.build());
+    assert_eq!(
+        assess_scope(&before, &local).notes,
+        vec![ScopeNote::DifferentSource]
+    );
+    assert!(matches!(
+        compare::compare(before, local, true, &AtomicBool::new(false)),
+        Err(CompareError::Incompatible(_))
+    ));
+    let _ = fs::remove_dir_all(&folder);
+}

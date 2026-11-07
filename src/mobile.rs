@@ -57,6 +57,13 @@ pub enum Command {
     Appearance(usize),
     Allocated(bool),
     OpenSaved,
+    /// Choose a file for one side of a comparison.
+    OpenFor(crate::compare::Side),
+    SwapDirection,
+    ConfirmScope(bool),
+    StartCompare,
+    /// Browse the result that stands on one side of the comparison.
+    ShowSide(crate::compare::Side),
 }
 fn memory_setting() -> &'static Mutex<crate::memory::BudgetMode> {
     static SETTING: OnceLock<Mutex<crate::memory::BudgetMode>> = OnceLock::new();
@@ -90,6 +97,7 @@ struct State {
     /// The browsed result is an opened file: its recorded locations are never actionable.
     historical: bool,
     comparison: Option<Arc<crate::compare::Comparison>>,
+    setup: Option<Setup>,
 }
 fn state() -> &'static Mutex<State> {
     static VALUE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -141,6 +149,126 @@ pub fn clear_view(generation: u64) {
             ..Default::default()
         };
     }
+}
+/// What the native comparison page shows about the choice of Before and After.
+/// Plain facts only; the page localizes them for the request's language.
+#[derive(Clone, Debug, Default)]
+pub struct Setup {
+    pub before: Option<SetupOperand>,
+    pub after: Option<SetupOperand>,
+    pub assessment: Option<crate::compare::ScopeAssessment>,
+    pub confirmed: bool,
+    pub comparing: bool,
+    pub opening: bool,
+    pub failure: Option<SetupFailure>,
+    pub finished: bool,
+}
+#[derive(Clone, Debug)]
+pub struct SetupOperand {
+    pub name: String,
+    pub live: bool,
+    pub captured: u64,
+    pub objects: u64,
+    pub partial: bool,
+}
+#[derive(Clone, Debug)]
+pub enum SetupFailure {
+    Incompatible(crate::compare::ScopeAssessment),
+    Other(&'static str),
+}
+/// Publish the current choice of comparison operands for the native browser.
+pub fn publish_setup(generation: u64, setup: Setup) {
+    if bridge::is_current(generation) {
+        let mut state = state().lock().unwrap_or_else(|p| p.into_inner());
+        state.generation = generation;
+        state.setup = Some(setup);
+    }
+}
+fn setup_page(language: usize, setup: &Setup) -> Value {
+    use crate::compare::ScopeVerdict;
+    let t = |key| crate::i18n::text(language, key);
+    let operand = |operand: &Option<SetupOperand>| match operand {
+        Some(o) => format!(
+            "{}: {} · {} · {} · {}",
+            t(if o.live { "view_current" } else { "saved_file" }),
+            o.name,
+            crate::i18n::timestamp(o.captured),
+            crate::i18n::counted(language, o.objects, "object"),
+            t(if o.partial { "partial" } else { "complete" })
+        ),
+        None => t("compare_not_chosen").to_owned(),
+    };
+    let scope_text = |assessment: &crate::compare::ScopeAssessment| {
+        assessment
+            .notes
+            .iter()
+            .map(|note| t(note.key()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut lines = vec![
+        format!("{}: {}", t("compare_baseline"), operand(&setup.before)),
+        format!("{}: {}", t("compare_current"), operand(&setup.after)),
+    ];
+    let ready = setup.before.is_some() && setup.after.is_some() && setup.assessment.is_some();
+    let mut needs_confirmation = false;
+    let mut can_start = false;
+    if let Some(assessment) = setup.assessment.as_ref().filter(|_| ready) {
+        lines.push(format!(
+            "{} {} {}",
+            t("compare_baseline"),
+            t("compare_arrow"),
+            t("compare_current")
+        ));
+        lines.push(
+            t(match assessment.verdict {
+                ScopeVerdict::Matching => "cmp_verdict_matching",
+                ScopeVerdict::Insufficient => "cmp_verdict_insufficient",
+                ScopeVerdict::Incompatible => "cmp_verdict_incompatible",
+            })
+            .to_owned(),
+        );
+        lines.push(scope_text(assessment));
+        needs_confirmation = assessment.verdict == ScopeVerdict::Insufficient;
+        can_start = !setup.comparing
+            && !setup.opening
+            && match assessment.verdict {
+                ScopeVerdict::Matching => true,
+                ScopeVerdict::Insufficient => setup.confirmed,
+                ScopeVerdict::Incompatible => false,
+            };
+        for (operand, key) in [
+            (&setup.before, "cmp_limit_baseline_partial"),
+            (&setup.after, "cmp_limit_current_partial"),
+        ] {
+            if operand.as_ref().is_some_and(|o| o.partial) {
+                lines.push(t(key).to_owned());
+            }
+        }
+    } else {
+        lines.push(t("compare_needs_two").to_owned());
+    }
+    if setup.comparing {
+        lines.push(t("comparing").to_owned());
+    }
+    match &setup.failure {
+        Some(SetupFailure::Incompatible(scope)) => {
+            lines.push(t("cmp_verdict_incompatible").to_owned());
+            lines.push(scope_text(scope));
+        }
+        Some(SetupFailure::Other(key)) => lines.push(t(key).to_owned()),
+        None => {}
+    }
+    json!({
+        "lines": lines,
+        "can_swap": ready,
+        "needs_confirmation": needs_confirmation,
+        "confirmed": setup.confirmed,
+        "can_start": can_start && !setup.finished,
+        "can_show_before": setup.before.is_some(),
+        "can_show_after": setup.after.is_some(),
+        "busy": setup.opening,
+    })
 }
 /// Advertise Back for the current canvas screen as well as folder navigation.
 /// Native Android Back must dismiss a result/overlay before exiting the Activity.
@@ -242,6 +370,13 @@ pub fn page(request: &str) -> String {
             "appearance" => Command::Appearance(index),
             "allocated" => Command::Allocated(index != 0),
             "open_saved" => Command::OpenSaved,
+            "open_before" => Command::OpenFor(crate::compare::Side::Baseline),
+            "open_after" => Command::OpenFor(crate::compare::Side::Current),
+            "swap_direction" => Command::SwapDirection,
+            "confirm_scope" => Command::ConfirmScope(index != 0),
+            "start_compare" => Command::StartCompare,
+            "show_before" => Command::ShowSide(crate::compare::Side::Baseline),
+            "show_after" => Command::ShowSide(crate::compare::Side::Current),
             _ => return "{}".into(),
         };
         if matches!(command, Command::Navigate(_) | Command::Select(_))
@@ -255,7 +390,7 @@ pub fn page(request: &str) -> String {
         }
         return json!({"accepted":enqueue(generation,command)}).to_string();
     }
-    let (generation, result, progress, historical, comparison) = {
+    let (generation, result, progress, historical, comparison, setup) = {
         let state = state().lock().unwrap_or_else(|p| p.into_inner());
         (
             state.generation,
@@ -263,6 +398,7 @@ pub fn page(request: &str) -> String {
             state.progress.clone(),
             state.historical,
             state.comparison.clone(),
+            state.setup.clone(),
         )
     };
     if !bridge::is_current(generation) {
@@ -282,6 +418,15 @@ pub fn page(request: &str) -> String {
     };
     let mut page = result_page(&result, generation, &request, comparison.as_deref());
     page["historical"] = json!(historical);
+    if request["mode"].as_str() == Some("changes") {
+        let language = request["language"]
+            .as_str()
+            .and_then(|tag| crate::i18n::TAGS.iter().position(|t| *t == tag))
+            .unwrap_or(0);
+        let mut setup = setup.unwrap_or_default();
+        setup.finished = comparison.is_some();
+        page["compare"] = setup_page(language, &setup);
+    }
     page.to_string()
 }
 fn changes_page(
@@ -987,6 +1132,142 @@ mod tests {
         publish_view(generation, Arc::new(current), true, None);
         let page: Value = serde_json::from_str(&page_request("{}")).unwrap();
         assert_eq!(page["historical"], true);
+    }
+    fn setup_operand(name: &str, captured: u64, partial: bool) -> SetupOperand {
+        SetupOperand {
+            name: name.into(),
+            live: false,
+            captured,
+            objects: 12,
+            partial,
+        }
+    }
+    fn assessment(verdict: crate::compare::ScopeVerdict) -> crate::compare::ScopeAssessment {
+        crate::compare::ScopeAssessment {
+            verdict,
+            notes: vec![crate::compare::ScopeNote::NoRecordedIdentity],
+        }
+    }
+    #[test]
+    fn native_comparison_page_names_files_dates_direction_and_what_may_start() {
+        use crate::compare::ScopeVerdict;
+        let mut setup = Setup {
+            before: Some(setup_operand("pixel-day1.json", 1_790_000_000, false)),
+            after: Some(setup_operand("pixel-day2.json", 1_790_259_200, true)),
+            assessment: Some(assessment(ScopeVerdict::Matching)),
+            ..Setup::default()
+        };
+        let page = setup_page(0, &setup);
+        let lines: Vec<_> = page["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l.as_str().unwrap().to_owned())
+            .collect();
+        let all = lines.join("\n");
+        for expected in [
+            "Before: File: pixel-day1.json · 2026-09-21 14:13 UTC",
+            "After: File: pixel-day2.json · 2026-09-24 14:13 UTC",
+            "Before \u{2192} After",
+            crate::i18n::text(0, "cmp_verdict_matching"),
+            crate::i18n::text(0, "partial"),
+        ] {
+            assert!(all.contains(expected), "{expected} in {all}");
+        }
+        assert_eq!(page["can_start"], true);
+        assert_eq!(page["needs_confirmation"], false);
+        assert_eq!(page["can_swap"], true);
+        // Not enough recorded: starting needs the person's confirmation.
+        setup.assessment = Some(assessment(ScopeVerdict::Insufficient));
+        let page = setup_page(0, &setup);
+        assert_eq!(
+            (
+                page["can_start"].clone(),
+                page["needs_confirmation"].clone()
+            ),
+            (json!(false), json!(true))
+        );
+        setup.confirmed = true;
+        assert_eq!(setup_page(0, &setup)["can_start"], true);
+        // Busy work and incompatible areas never start.
+        setup.comparing = true;
+        assert_eq!(setup_page(0, &setup)["can_start"], false);
+        setup.comparing = false;
+        setup.assessment = Some(assessment(ScopeVerdict::Incompatible));
+        assert_eq!(setup_page(0, &setup)["can_start"], false);
+        // A side that is not chosen is said so, and nothing can be started or swapped.
+        setup.after = None;
+        setup.assessment = None;
+        let page = setup_page(1, &setup);
+        assert_eq!(
+            (page["can_start"].clone(), page["can_swap"].clone()),
+            (json!(false), json!(false))
+        );
+        let text = page["lines"].to_string();
+        assert!(
+            text.contains(crate::i18n::text(1, "compare_not_chosen")),
+            "{text}"
+        );
+        assert!(
+            text.contains(crate::i18n::text(1, "compare_needs_two")),
+            "{text}"
+        );
+        // A comparison that already exists is not started again.
+        setup.finished = true;
+        setup.assessment = Some(assessment(ScopeVerdict::Matching));
+        setup.after = Some(setup_operand("b.json", 1, false));
+        assert_eq!(setup_page(0, &setup)["can_start"], false);
+    }
+
+    #[test]
+    fn native_comparison_commands_are_accepted_for_the_current_generation_only() {
+        let _session = bridge::SESSION_TEST_LOCK.lock().unwrap();
+        let generation = bridge::begin();
+        publish_view(generation, Arc::new(result(2)), true, None);
+        publish_setup(
+            generation,
+            Setup {
+                before: Some(setup_operand("a.json", 1, false)),
+                ..Setup::default()
+            },
+        );
+        let page: Value = serde_json::from_str(&page(
+            r#"{"mode":"changes","language":"ru","directory":0,"offset":0}"#,
+        ))
+        .unwrap();
+        assert!(
+            page["compare"]["lines"].to_string().contains("До"),
+            "{page}"
+        );
+        assert_eq!(page["compare"]["can_show_after"], false);
+        while take_command().is_some() {}
+        for (name, index, expected) in [
+            ("open_before", 0, "OpenFor(Baseline)"),
+            ("open_after", 0, "OpenFor(Current)"),
+            ("swap_direction", 0, "SwapDirection"),
+            ("confirm_scope", 1, "ConfirmScope(true)"),
+            ("start_compare", 0, "StartCompare"),
+            ("show_before", 0, "ShowSide(Baseline)"),
+            ("show_after", 0, "ShowSide(Current)"),
+        ] {
+            let request = json!({"command":name,"index":index,"generation":generation});
+            let response: Value =
+                serde_json::from_str(&page_request(&request.to_string())).unwrap();
+            assert_eq!(response["accepted"], true, "{name}");
+            let command = take_command().expect(name);
+            let rendered = match command {
+                Command::OpenFor(side) => format!("OpenFor({side:?})"),
+                Command::SwapDirection => "SwapDirection".into(),
+                Command::ConfirmScope(on) => format!("ConfirmScope({on})"),
+                Command::StartCompare => "StartCompare".into(),
+                Command::ShowSide(side) => format!("ShowSide({side:?})"),
+                _ => "other".into(),
+            };
+            assert_eq!(rendered, expected);
+        }
+        let stale = json!({"command":"swap_direction","generation":generation + 1000});
+        assert_eq!(page_request(&stale.to_string()), "{}");
+        assert!(take_command().is_none());
     }
     fn page_request(request: &str) -> String {
         page(request)

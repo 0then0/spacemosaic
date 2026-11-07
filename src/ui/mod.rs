@@ -19,7 +19,7 @@ mod treemap;
 use crate::compare::Dimension;
 use eframe::egui::{self, RichText};
 use phone::{PhoneOverlay, PhoneView};
-use saved::{Changes, SavedResult, View};
+use saved::{Changes, OpenTarget, SavedResult, View};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::path::Path;
 use std::{
@@ -74,8 +74,13 @@ pub struct ExplorerApp {
     live: Option<Arc<ScanResult>>,
     view: View,
     saved: Option<SavedResult>,
+    /// A second opened file, so two snapshots can be compared without a scan.
+    second: Option<SavedResult>,
     open_job: Option<crate::job::OpenJob>,
     open_name: String,
+    open_target: OpenTarget,
+    /// Further files to read after the current one, when several were given at once.
+    open_queue: std::collections::VecDeque<PathBuf>,
     open_error: Option<crate::import::ImportError>,
     changes: Changes,
     /// Id of the resizable map panel, which depends on its parent ui in egui 0.37.
@@ -83,6 +88,11 @@ pub struct ExplorerApp {
     map_panel_id: Option<egui::Id>,
     #[cfg(any(target_os = "android", target_os = "ios"))]
     native_open: Option<mpsc::Receiver<crate::mobile::OpenOutcome>>,
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    native_open_target: OpenTarget,
+    /// Test hook: total bytes saved-result work may use where no memory reading exists.
+    #[cfg(test)]
+    memory_budget: Option<usize>,
     scope: Option<PathBuf>,
     provider_scope: Option<(u64, String)>,
     navigation: navigation::NavigationState,

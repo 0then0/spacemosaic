@@ -51,12 +51,19 @@ impl Limits {
         }
     }
 
-    pub(crate) fn for_device() -> Self {
+    /// Local limits while the session already retains `held` estimated bytes.
+    pub(crate) fn for_device_holding(held: usize) -> Self {
         Self {
-            memory_limit: crate::memory::import_budget(),
+            memory_limit: crate::memory::operation_budget(held),
             ..Self::platform()
         }
     }
+}
+
+/// Estimated memory for the lookup structures built to browse one result:
+/// adjacency, visible rows, direct children and grouped map items.
+pub(crate) fn index_bytes(nodes: usize) -> usize {
+    nodes.saturating_mul(12 * size_of::<usize>())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,7 +88,8 @@ impl ImportError {
     pub fn key(&self) -> &'static str {
         match self {
             Self::Io(_) | Self::NotAFile => "import_error_io",
-            Self::TooLarge { .. } | Self::MemoryLimit => "import_error_too_large",
+            Self::TooLarge { .. } => "import_error_too_large",
+            Self::MemoryLimit => "import_error_memory",
             Self::UnsupportedVersion(_) => "import_error_version",
             Self::Malformed | Self::InvalidValue => "import_error_malformed",
             Self::Invalid { .. } => "import_error_invalid",
@@ -173,9 +181,7 @@ fn opening_workspace(nodes: usize, extensions: usize, extension_bytes: usize) ->
     // BTreeMap nodes, result entries, and temporary storage for stable sorting.
     let group_extensions = extensions.saturating_mul(4 * entry);
     // Adjacency, visible rows and stack, direct children, and grouped map items.
-    let build_index = nodes
-        .saturating_mul(12 * size_of::<usize>())
-        .saturating_add(extensions.saturating_mul(entry));
+    let build_index = index_bytes(nodes).saturating_add(extensions.saturating_mul(entry));
     validation.max(
         group_extensions
             .max(build_index)

@@ -10,7 +10,7 @@ multi-crate framework.
   scheduling, result filtering, file-type summaries, and export.
 - `treemap`: squarified rectangle layout and hit testing, independent of egui.
 - `import`: bounded, validating import of exported JSON ([format](format.md)).
-- `compare`: scope assessment and the baseline/current diff ([comparison](comparison.md)).
+- `compare`: scope assessment and the Before/After diff with a memory allowance ([comparison](comparison.md)).
 - `job`: cancellable open/compare jobs; one heavy job at a time, superseded jobs cannot deliver.
 - `bridge`: picker acknowledgements and generation-based isolation.
 - `provider`: bounded native metadata pages behind the `scan::Storage` cursor.
