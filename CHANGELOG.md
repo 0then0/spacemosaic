@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.3 — 2026-11-07
 
 - Compare two saved JSON snapshots without scanning: choose Before and After explicitly (current scan or either of two opened files), with file names, capture dates and direction shown.
 - Check a joint memory allowance (held results, the second file, indexes and the diff) before large allocations; on refusal the open snapshots stay available with a clear reason.
