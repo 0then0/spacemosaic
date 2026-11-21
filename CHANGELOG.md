@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.4 — 2026-11-21
 
 - Show observed hard-link paths and filesystem link counts in file details for local Unix desktop scans. The index uses the scan memory budget, and sizes still count each path separately.
 
