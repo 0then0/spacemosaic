@@ -825,6 +825,7 @@ mod tests {
             errors: 0,
             scope_identity: None,
             app_version: None,
+            hard_link_groups: None,
             nodes,
         }
     }

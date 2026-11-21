@@ -509,6 +509,7 @@ impl<'de> Visitor<'de> for Document<'_> {
             scope_identity: identity.flatten(),
             app_version: app_version.flatten(),
             memory: memory.flatten(),
+            hard_link_groups: None,
             nodes: nodes.ok_or_else(missing)?,
         })
     }

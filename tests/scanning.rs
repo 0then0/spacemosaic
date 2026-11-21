@@ -136,6 +136,117 @@ fn symlink_cycle_is_not_followed_and_hard_links_are_counted_per_path() {
     );
     assert_eq!(result.nodes.iter().filter(|n| n.hard_link).count(), 2);
 }
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+#[test]
+fn hard_link_paths_are_scoped_to_the_scan_and_keep_per_path_sizes() {
+    use std::os::unix::fs::{MetadataExt, symlink};
+
+    let fixture = Fixture::new();
+    let left = fixture.0.join("left");
+    let right = fixture.0.join("right");
+    fs::create_dir(&left).unwrap();
+    fs::create_dir(&right).unwrap();
+    let original = left.join("original.bin");
+    let alias = right.join("alias.bin");
+    let copy = left.join("copy.bin");
+    let link = left.join("symlink.bin");
+    fs::write(&original, [7; 8193]).unwrap();
+    fs::hard_link(&original, &alias).unwrap();
+    fs::copy(&original, &copy).unwrap();
+    symlink(&original, &link).unwrap();
+
+    let metadata = fs::symlink_metadata(&original).unwrap();
+    let identity = |m: &fs::Metadata| (m.dev(), m.ino(), m.nlink());
+    assert_eq!(metadata.nlink(), 2);
+    assert_eq!(
+        identity(&metadata),
+        identity(&fs::symlink_metadata(&alias).unwrap())
+    );
+    assert_ne!(metadata.ino(), fs::symlink_metadata(&copy).unwrap().ino());
+
+    let mut full = fixture.scan(Options::default());
+    let subfolder = scan::scan(
+        &left,
+        Options::default(),
+        &AtomicBool::new(false),
+        &Mutex::new(Progress::default()),
+    );
+    for (result, files) in [
+        (&full, vec![&original, &alias, &copy]),
+        (&subfolder, vec![&original, &copy]),
+    ] {
+        let index = |path| {
+            result
+                .nodes
+                .iter()
+                .position(|n| n.path.as_ref() == Some(path))
+                .unwrap()
+        };
+        let groups = result.hard_link_groups.as_ref().unwrap();
+        let original_id = index(&original);
+        let group = groups.get(original_id).unwrap();
+        assert_eq!(
+            (group.min_nlink, group.max_nlink),
+            (metadata.nlink(), metadata.nlink())
+        );
+        if files.len() == 3 {
+            let alias_id = index(&alias);
+            assert_eq!(group.nodes.len(), 2);
+            assert!(group.nodes.contains(&original_id) && group.nodes.contains(&alias_id));
+            assert_eq!(groups.get(alias_id).unwrap().nodes, group.nodes);
+        } else {
+            assert_eq!(group.nodes, [original_id]);
+        }
+        assert!(groups.get(index(&copy)).is_none());
+        assert!(groups.get(index(&link)).is_none());
+        assert_eq!(result.nodes[index(&link)].kind, scan::Kind::Link);
+        assert_eq!(result.incomplete_reason(), None);
+
+        let mut expected_logical = 0;
+        let mut expected_allocated = 0;
+        for path in files {
+            let stat = fs::symlink_metadata(path).unwrap();
+            let node = &result.nodes[index(path)];
+            assert_eq!(node.logical.known, stat.len());
+            assert_eq!(node.allocated.known, stat.blocks() * 512);
+            expected_logical += stat.len();
+            expected_allocated += stat.blocks() * 512;
+        }
+        assert_eq!(result.nodes[0].logical.known, expected_logical);
+        assert_eq!(result.nodes[0].allocated.known, expected_allocated);
+    }
+
+    let retained = full.retained_bytes();
+    let json = full.json().unwrap();
+    assert!(
+        serde_json::from_slice::<scan::ScanResult>(&json)
+            .unwrap()
+            .hard_link_groups
+            .is_none()
+    );
+    full.hard_link_groups.take();
+    assert!(full.retained_bytes() < retained);
+    assert_eq!(json, full.json().unwrap());
+}
+
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+#[test]
+fn stopped_scan_keeps_observed_hard_link_members() {
+    let fixture = Fixture::new();
+    fs::write(fixture.0.join("file"), [0; 11]).unwrap();
+    fs::hard_link(fixture.0.join("file"), fixture.0.join("alias")).unwrap();
+    let result = fixture.scan(Options {
+        node_limit: 2,
+        ..Options::default()
+    });
+    assert_eq!(result.incomplete_reason(), Some("scan_node_limit"));
+    let group = result.hard_link_groups.as_ref().unwrap().get(1).unwrap();
+    assert_eq!(group.nodes, [1]);
+    assert_eq!(group.max_nlink, 2);
+    assert_eq!(result.nodes[0].logical.known, 11);
+    assert!(!result.nodes[0].complete);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn invalid_utf8_paths_roundtrip_in_machine_export() {
@@ -246,15 +357,35 @@ fn denied_directory_is_reported_without_claiming_a_complete_scan() {
     let fixture = Fixture::new();
     let directory = fixture.0.join("denied");
     fs::create_dir(&directory).unwrap();
+    let visible = fixture.0.join("visible");
+    fs::write(&visible, b"shared").unwrap();
+    fs::hard_link(&visible, directory.join("hidden")).unwrap();
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o000)).unwrap();
     let result = fixture.scan(Options::default());
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(result.errors > 0);
     assert!(!result.nodes[0].complete);
+    assert_eq!(result.incomplete_reason(), Some("scan_incomplete"));
     assert!(
         result
             .nodes
             .iter()
             .any(|node| node.error.as_deref() == Some("permission_denied"))
     );
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let index = result
+            .nodes
+            .iter()
+            .position(|node| node.name == "visible")
+            .unwrap();
+        let group = result
+            .hard_link_groups
+            .as_ref()
+            .unwrap()
+            .get(index)
+            .unwrap();
+        assert_eq!(group.nodes, [index]);
+        assert_eq!((group.min_nlink, group.max_nlink), (2, 2));
+    }
 }

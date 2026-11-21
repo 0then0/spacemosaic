@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Show observed hard-link paths and filesystem link counts in file details for local Unix desktop scans. The index uses the scan memory budget, and sizes still count each path separately.
+
 ## v0.3.3 — 2026-11-07
 
 - Compare two saved JSON snapshots without scanning: choose Before and After explicitly (current scan or either of two opened files), with file names, capture dates and direction shown.

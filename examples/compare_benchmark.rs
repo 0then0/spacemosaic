@@ -73,6 +73,7 @@ fn result(nodes: Vec<Node>) -> ScanResult {
             root_created_unix_nanos: Some(1),
         }),
         app_version: Some("benchmark".into()),
+        hard_link_groups: None,
         nodes,
     }
 }

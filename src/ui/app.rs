@@ -820,7 +820,7 @@ impl ExplorerApp {
                 if self.compact_layout {
                     ui.label(RichText::new(t("phone_location")).small().weak());
                 }
-                ui.label(readable_locator(&node.locator));
+                ui.label(details_locator(node));
                 ui.label(format!(
                     "{}: {}",
                     t("logical_bytes"),
@@ -874,6 +874,10 @@ impl ExplorerApp {
                         self.notice = Some("open_failed");
                     }
                 });
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                if node.kind == Kind::File {
+                    hard_link_details(ui, language, &result, index);
+                }
             });
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -916,6 +920,65 @@ impl ExplorerApp {
         }
     }
 }
+
+fn details_locator(node: &scan::Node) -> egui::WidgetText {
+    match &node.path {
+        Some(path) => match path.to_str() {
+            Some(path) => path.into(),
+            None => format!("{path:?}").into(),
+        },
+        None => readable_locator(&node.locator).into(),
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn hard_link_details(ui: &mut egui::Ui, language: usize, result: &ScanResult, index: usize) {
+    const PATH_LIMIT: usize = 16;
+    let t = |key| i18n::text(language, key);
+    let number = |value| i18n::integer(language, value);
+    if let Some(groups) = &result.hard_link_groups {
+        if let Some(group) = groups.get(index) {
+            ui.strong(t("hard_link_group"));
+            let found = group.nodes.len() as u64;
+            let reported = number(group.max_nlink);
+            if group.min_nlink == group.max_nlink && found <= group.max_nlink {
+                ui.label(
+                    t("hard_link_count")
+                        .replace("{found}", &number(found))
+                        .replace("{reported}", &reported),
+                );
+                if found < group.max_nlink {
+                    ui.label(t("hard_link_unknown_paths"));
+                }
+            } else {
+                let reported = if group.min_nlink == group.max_nlink {
+                    reported
+                } else {
+                    format!("{}–{reported}", number(group.min_nlink))
+                };
+                ui.label(
+                    t("hard_link_inconsistent")
+                        .replace("{found}", &number(found))
+                        .replace("{reported}", &reported),
+                );
+            }
+            for &node in group.nodes.iter().take(PATH_LIMIT) {
+                ui.label(details_locator(&result.nodes[node]));
+            }
+            if group.nodes.len() > PATH_LIMIT {
+                ui.label(t("hard_link_path_limit").replace("{shown}", &number(PATH_LIMIT as u64)));
+            }
+        } else {
+            ui.label(t("hard_link_single"));
+        }
+    } else {
+        ui.label(t("hard_link_unavailable"));
+    }
+    if let Some(reason) = result.incomplete_reason() {
+        ui.label(t(reason));
+    }
+}
+
 impl ExplorerApp {
     pub(super) fn sort_extensions(&mut self) {
         let (column, descending) = self.extension_sort;

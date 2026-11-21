@@ -208,6 +208,7 @@ impl Builder {
                 root_created_unix_nanos: if self.provider { None } else { self.created },
             }),
             app_version: (!self.v1).then(|| "test".into()),
+            hard_link_groups: None,
             nodes: {
                 let _ = incomplete;
                 self.nodes

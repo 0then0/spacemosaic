@@ -12,6 +12,14 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod hard_links;
+pub use hard_links::{HardLinkGroup, HardLinkGroups};
+
+const TRACK_HARD_LINKS: bool = cfg!(all(
+    unix,
+    not(any(target_os = "android", target_os = "ios"))
+));
+
 /// Version written by this release. Schemas 1 and 2 remain readable; see `import`.
 pub const SCHEMA_VERSION: u32 = 3;
 
@@ -145,6 +153,9 @@ pub struct ScanResult {
     pub scope_identity: Option<ScopeIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// Live desktop Unix observations. Snapshots and providers have no index.
+    #[serde(skip)]
+    pub hard_link_groups: Option<HardLinkGroups>,
     pub nodes: Vec<Node>,
 }
 
@@ -254,19 +265,7 @@ fn allocated(metadata: &fs::Metadata) -> Option<u64> {
         None
     }
 }
-fn hard_link(metadata: &fs::Metadata) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        metadata.nlink() > 1
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = metadata;
-        false
-    }
-}
-fn classify(node: &mut Node, metadata: &fs::Metadata) {
+fn classify(node: &mut Node, metadata: &fs::Metadata) -> Option<hard_links::Observation> {
     if is_link(metadata) {
         node.kind = Kind::Link;
         node.complete = true;
@@ -279,12 +278,24 @@ fn classify(node: &mut Node, metadata: &fs::Metadata) {
         node.kind = Kind::File;
         node.logical = Measure::value(Some(metadata.len()));
         node.allocated = Measure::value(allocated(metadata));
-        node.hard_link = hard_link(metadata);
         node.complete = true;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let nlink = metadata.nlink();
+            node.hard_link = nlink > 1;
+            if TRACK_HARD_LINKS {
+                return Some(hard_links::Observation {
+                    inode: (metadata.dev(), metadata.ino()),
+                    nlink,
+                });
+            }
+        }
     } else {
         node.kind = Kind::Other;
         node.complete = true;
     }
+    None
 }
 fn fail(node: &mut Node, error: String) {
     node.error = Some(error);
@@ -366,6 +377,12 @@ fn result_heap(result: &ScanResult) -> usize {
 fn bytes<T>(capacity: usize) -> usize {
     capacity.saturating_mul(std::mem::size_of::<T>())
 }
+fn table_bytes<T>(capacity: usize) -> usize {
+    // Hash table control bytes, load factor and implementation rounding.
+    capacity
+        .saturating_mul(2)
+        .saturating_mul(std::mem::size_of::<T>() + 1)
+}
 fn grown(capacity: usize, len: usize) -> Option<usize> {
     if len < capacity {
         Some(capacity)
@@ -384,11 +401,7 @@ fn estimate(
     bytes::<Node>(nodes)
         .saturating_add(heap)
         .saturating_add(bytes::<usize>(stack))
-        // Hash table control bytes, load factor and implementation rounding.
-        .saturating_add(
-            seen.saturating_mul(2)
-                .saturating_mul(std::mem::size_of::<String>() + 1),
-        )
+        .saturating_add(table_bytes::<String>(seen))
         .saturating_add(seen_heap)
         .saturating_add(workspace)
         .saturating_add(64 * 1024)
@@ -502,6 +515,7 @@ pub fn scan(
         errors: 0,
         scope_identity: None,
         app_version: Some(env!("CARGO_PKG_VERSION").into()),
+        hard_link_groups: None,
         nodes: vec![node(path.to_owned(), None)],
     };
     let root_metadata = fs::symlink_metadata(path);
@@ -511,24 +525,39 @@ pub fn scan(
         root_metadata.as_ref().ok(),
     ));
     let mut stack = Vec::new();
-    match root_metadata {
+    let root_file = match root_metadata {
         Ok(metadata) => {
-            classify(&mut result.nodes[0], &metadata);
+            let file = classify(&mut result.nodes[0], &metadata);
             if result.nodes[0].kind == Kind::Directory {
                 stack.push(0);
             }
+            file
         }
         Err(error) => {
             fail(&mut result.nodes[0], io_code(&error));
             result.errors += 1;
+            None
         }
-    }
+    };
+    let mut hard_links = TRACK_HARD_LINKS.then(hard_links::Tracker::default);
+    let tree_bytes = |result: &ScanResult, stack_capacity, heap| {
+        estimate(result.nodes.capacity(), heap, stack_capacity, 0, 0, 0)
+    };
     let mut heap = node_heap(&result.nodes[0]).saturating_add(result_heap(&result));
-    if let Some(reason) =
-        monitor.check(estimate(result.nodes.capacity(), heap, stack.capacity(), 0, 0, 0) as u64)
-    {
+    let root_bytes = tree_bytes(&result, stack.capacity(), heap);
+    let file_root = root_file.is_some();
+    let reason = monitor.check(root_bytes as u64).or_else(|| {
+        let tracker = hard_links.as_mut()?;
+        tracker
+            .observe(0, root_file?, root_bytes, &mut monitor)
+            .err()
+    });
+    if let Some(reason) = reason {
         stop(&mut result, 0, reason);
         stack.clear();
+        if file_root {
+            hard_links = None;
+        }
     }
     if cancel.load(Ordering::Relaxed) {
         result.cancelled = true;
@@ -537,13 +566,16 @@ pub fn scan(
     }
     let mut known_bytes = 0_u64;
     let mut published = Instant::now();
+    let mut link_bytes = hard_links
+        .as_ref()
+        .map_or(0, hard_links::Tracker::heap_bytes);
     'walk: while let Some(parent) = stack.pop() {
         if cancel.load(Ordering::Relaxed) {
             result.cancelled = true;
             break;
         }
-        if let Some(reason) =
-            monitor.check(estimate(result.nodes.capacity(), heap, stack.capacity(), 0, 0, 0) as u64)
+        if let Some(reason) = monitor
+            .check(tree_bytes(&result, stack.capacity(), heap).saturating_add(link_bytes) as u64)
         {
             stop(&mut result, parent, reason);
             break;
@@ -579,11 +611,9 @@ pub fn scan(
                 result.nodes[parent].listing_complete = Some(false);
                 break 'walk;
             }
-            if let Some(reason) =
-                monitor.check(
-                    estimate(result.nodes.capacity(), heap, stack.capacity(), 0, 0, 0) as u64,
-                )
-            {
+            if let Some(reason) = monitor.check(
+                tree_bytes(&result, stack.capacity(), heap).saturating_add(link_bytes) as u64,
+            ) {
                 stop(&mut result, parent, reason);
                 break 'walk;
             }
@@ -599,36 +629,54 @@ pub fn scan(
                 }
             };
             let mut child = node(path, Some(parent));
-            match fs::symlink_metadata(child.path.as_ref().expect("local path")) {
+            let file = match fs::symlink_metadata(child.path.as_ref().expect("local path")) {
                 Ok(metadata) => {
-                    classify(&mut child, &metadata);
+                    let file = classify(&mut child, &metadata);
                     if child.kind == Kind::Directory
                         && !options.cross_filesystems
                         && device(&metadata) != root_device
                     {
                         fail(&mut child, "mount_boundary".into());
                     }
+                    file
                 }
                 Err(error) => {
                     fail(&mut child, io_code(&error));
                     result.errors += 1;
+                    None
                 }
-            }
+            };
+            let auxiliary = Auxiliary {
+                workspace: link_bytes,
+                ..Auxiliary::default()
+            };
             if let Err(reason) = admit(
                 &mut result.nodes,
                 &mut stack,
                 heap,
                 &child,
-                Auxiliary::default(),
-                Auxiliary::default(),
+                auxiliary,
+                auxiliary,
                 &mut monitor,
             ) {
                 stop(&mut result, parent, reason);
                 break 'walk;
             }
             heap = heap.saturating_add(node_heap(&child));
-            known_bytes = known_bytes.saturating_add(child.logical.known);
             let index = result.nodes.len();
+            if let (Some(tracker), Some(file)) = (&mut hard_links, file) {
+                if let Err(reason) = tracker.observe(
+                    index,
+                    file,
+                    tree_bytes(&result, stack.capacity(), heap),
+                    &mut monitor,
+                ) {
+                    stop(&mut result, parent, reason);
+                    break 'walk;
+                }
+                link_bytes = tracker.heap_bytes();
+            }
+            known_bytes = known_bytes.saturating_add(child.logical.known);
             if child.kind == Kind::Directory && child.error.is_none() {
                 stack.push(index);
             }
@@ -647,15 +695,20 @@ pub fn scan(
             stop_listing(&mut result.nodes[parent]);
             break;
         }
-        if let Some(reason) = monitor.check_pressure() {
+        if let Some(reason) = monitor
+            .check(tree_bytes(&result, stack.capacity(), heap).saturating_add(link_bytes) as u64)
+        {
             stop(&mut result, parent, reason);
             break;
         }
     }
+    result.hard_link_groups = hard_links.map(|tracker| tracker.groups);
     heap = result.nodes.iter().fold(result_heap(&result), |sum, n| {
         sum.saturating_add(node_heap(n))
     });
-    monitor.record(estimate(result.nodes.capacity(), heap, stack.capacity(), 0, 0, 0) as u64);
+    monitor.record(
+        tree_bytes(&result, stack.capacity(), heap).saturating_add(result.hard_link_heap()) as u64,
+    );
     result.memory = Some(monitor.diagnostics.clone());
     finish(&mut result, started, progress);
     result
@@ -714,12 +767,20 @@ pub enum Sort {
     Name,
 }
 impl ScanResult {
+    fn hard_link_heap(&self) -> usize {
+        self.hard_link_groups
+            .as_ref()
+            .map_or(0, HardLinkGroups::heap_bytes)
+    }
+
     /// Estimated heap retained by this result: node vector capacity, owned strings
     /// and metadata, with the scanner's allocator allowance. An estimate for
     /// admission decisions, not a measurement of the process.
     pub fn retained_bytes(&self) -> usize {
         self.nodes.iter().fold(
-            bytes::<Node>(self.nodes.capacity()).saturating_add(result_heap(self)),
+            bytes::<Node>(self.nodes.capacity())
+                .saturating_add(result_heap(self))
+                .saturating_add(self.hard_link_heap()),
             |total, node| total.saturating_add(node_heap(node)),
         )
     }
@@ -914,6 +975,7 @@ fn scan_storage_monitored(
         errors: 0,
         scope_identity: Some(provider_identity(&root.native_locator)),
         app_version: Some(env!("CARGO_PKG_VERSION").into()),
+        hard_link_groups: None,
         nodes: vec![root],
     };
     let mut stack = vec![0];

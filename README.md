@@ -95,6 +95,15 @@ APFS/CoW blocks, filesystem compression, and sparse allocation prevent these
 sums from representing unique physical consumption. Symbolic links and Windows
 reparse points are not followed. Their target size is unknown rather than zero.
 
+On Unix desktops, file details for a local scan show the paths found for the
+same device and inode, alongside the link count reported by the filesystem.
+For example, **Found 1 of 2 links** means the location of the other link is
+unknown. It may be outside the selected scope or in an area the scan could
+not read. The list shows up to 16 paths and the count covers all observed
+paths. Details flag inconsistent counts and show why a scan was incomplete.
+Hard-link groups belong to the current scan and are unavailable in saved
+snapshots and results from sources without Unix file identities.
+
 Filesystem boundaries are not crossed by default on Unix. Enable crossing in
 Settings before starting a new scan. Windows reparse points are skipped;
 Windows volume identities are not otherwise compared. A scan is a live

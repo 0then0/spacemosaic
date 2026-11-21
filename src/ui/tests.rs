@@ -126,6 +126,134 @@ fn incomplete_directory_explains_the_limit_and_can_be_scanned_separately() {
     assert_eq!(result.nodes[0].logical.known, 125739);
     assert!(result.nodes[0].complete);
 }
+
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+fn file_details(app: &mut ExplorerApp, context: &egui::Context, index: usize) -> egui::FullOutput {
+    app.select(index);
+    let mut output = context.run_ui(egui::RawInput::default(), |ui| app.details(ui));
+    output.textures_delta.clear();
+    output
+}
+
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+#[test]
+fn hard_link_details_follow_the_current_scan_and_are_unavailable_in_snapshots() {
+    let (_files, work) = files_directory("hard-link-details");
+    let root = work.join("scope");
+    let left = root.join("left");
+    let right = root.join("right");
+    std::fs::create_dir_all(&left).unwrap();
+    std::fs::create_dir_all(&right).unwrap();
+    let original = left.join("original%20name.bin");
+    let alias = right.join("alias.bin");
+    std::fs::write(&original, b"shared").unwrap();
+    std::fs::hard_link(&original, &alias).unwrap();
+
+    let context = egui::Context::default();
+    context.set_fonts(crate::fonts::definitions());
+    theme::install(&context);
+    let mut app = ExplorerApp::empty();
+    app.language = 0;
+    let wait_for_scan = |app: &mut ExplorerApp| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.job.is_some() {
+            assert!(Instant::now() < deadline, "scan did not finish");
+            app.poll(&context);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    let index = |app: &ExplorerApp, name| {
+        app.result
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .position(|node| node.name == name)
+            .unwrap()
+    };
+
+    app.start(root);
+    wait_for_scan(&mut app);
+    for name in ["original%20name.bin", "alias.bin"] {
+        let selected = index(&app, name);
+        let output = file_details(&mut app, &context, selected);
+        text_position(&output, "Found 2 of 2 links.");
+        text_position(&output, original.to_str().unwrap());
+        text_position(&output, alias.to_str().unwrap());
+        let selected_path = if name == "alias.bin" {
+            &alias
+        } else {
+            &original
+        };
+        let labels = output.shapes.iter().filter(|shape| {
+            matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == selected_path.to_str().unwrap())
+        });
+        assert_eq!(
+            labels.count(),
+            2,
+            "details and group must show the same selected path"
+        );
+    }
+    let snapshot = write_snapshot(&work, "full.json", app.result.as_deref().unwrap());
+
+    app.start(left);
+    assert!(app.result.is_none() && app.live.is_none() && app.navigation.selected.is_none());
+    wait_for_scan(&mut app);
+    let selected = index(&app, "original%20name.bin");
+    let output = file_details(&mut app, &context, selected);
+    text_position(&output, "Found 1 of 2 links.");
+    text_position(&output, i18n::text(0, "hard_link_unknown_paths"));
+    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Text(text) if text.galley.text() == alias.to_str().unwrap())));
+
+    app.open_result(snapshot);
+    settle(&mut app, &context, egui::vec2(1180.0, 900.0));
+    assert_eq!(app.view, View::Saved);
+    let selected = index(&app, "original%20name.bin");
+    let output = file_details(&mut app, &context, selected);
+    text_position(&output, i18n::text(0, "hard_link_unavailable"));
+}
+
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
+#[test]
+fn hard_link_details_report_the_scan_limit_and_count_paths_beyond_the_display_limit() {
+    let (_files, root) = files_directory("many-hard-links");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("0.bin"), [1]).unwrap();
+    for index in 1..18 {
+        std::fs::hard_link(root.join("0.bin"), root.join(format!("{index}.bin"))).unwrap();
+    }
+    let scan = |node_limit| {
+        Arc::new(scan::scan(
+            &root,
+            scan::Options {
+                node_limit,
+                ..Default::default()
+            },
+            &std::sync::atomic::AtomicBool::new(false),
+            &std::sync::Mutex::new(scan::Progress::default()),
+        ))
+    };
+    let result = scan(usize::MAX);
+    let group = result.hard_link_groups.as_ref().unwrap().get(1).unwrap();
+    let first_omitted = result.nodes[group.nodes[16]].locator.clone();
+    let context = egui::Context::default();
+    let mut app = ExplorerApp::empty();
+    app.language = 0;
+    app.set_displayed(Some(result));
+    let output = file_details(&mut app, &context, 1);
+    text_position(&output, "Found 18 of 18 links.");
+    text_position(&output, "Showing the first 16 paths.");
+    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Text(text) if text.galley.text() == first_omitted)));
+
+    app.set_displayed(Some(scan(2)));
+    let output = file_details(&mut app, &context, 1);
+    text_position(&output, "Found 1 of 18 links.");
+    text_position(&output, i18n::text(0, "scan_node_limit"));
+}
+
 #[test]
 fn settings_save_immediately_and_shutdown_flushes_pending_window_changes() {
     let files = preferences::tests::Fixture::new();
@@ -190,6 +318,7 @@ fn fixture() -> ExplorerApp {
         errors: 0,
         scope_identity: None,
         app_version: None,
+        hard_link_groups: None,
         nodes,
     }));
     app.language = 0;
@@ -1200,6 +1329,7 @@ fn a_single_group_click_opens_all_25000_items_without_recursive_grouping() {
         errors: 0,
         scope_identity: None,
         app_version: None,
+        hard_link_groups: None,
         nodes,
     }));
     app.navigation.selected = Some(25000);
@@ -1946,6 +2076,7 @@ fn a_large_comparison_virtualizes_rows_and_stays_interactive() {
         errors: 0,
         scope_identity: None,
         app_version: None,
+        hard_link_groups: None,
         nodes: nodes.clone(),
     };
     let new = variant(&old, |nodes| {
