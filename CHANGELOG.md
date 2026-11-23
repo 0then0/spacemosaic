@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.5 — 2026-11-23
 
 - Add exact root-relative folder exclusions to desktop scans. Show skipped
   folders and save the rules in JSON. Comparisons use the shared area and
