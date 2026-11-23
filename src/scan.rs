@@ -12,7 +12,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod exclusions;
 mod hard_links;
+pub use exclusions::{Exclusions, FolderExclusion, InvalidExclusionPath};
+pub(crate) use exclusions::{MAX_EXCLUSION_PATH_BYTES, NativeExclusions, normalized_rules};
 pub use hard_links::{HardLinkGroup, HardLinkGroups};
 
 const TRACK_HARD_LINKS: bool = cfg!(all(
@@ -20,8 +23,10 @@ const TRACK_HARD_LINKS: bool = cfg!(all(
     not(any(target_os = "android", target_os = "ios"))
 ));
 
-/// Version written by this release. Schemas 1 and 2 remain readable; see `import`.
-pub const SCHEMA_VERSION: u32 = 3;
+/// Latest schema, written when a local scan has folder exclusions.
+pub const SCHEMA_VERSION: u32 = 4;
+/// New scans without exclusions retain the previous format.
+pub const UNFILTERED_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Measure {
@@ -156,12 +161,15 @@ pub struct ScanResult {
     /// Live desktop Unix observations. Snapshots and providers have no index.
     #[serde(skip)]
     pub hard_link_groups: Option<HardLinkGroups>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclusions: Vec<FolderExclusion>,
     pub nodes: Vec<Node>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Options {
     pub cross_filesystems: bool,
+    pub exclusions: Exclusions,
     /// Optional caller/test bound, not an ordinary scan policy.
     pub node_limit: usize,
     /// Optional caller/test ceiling in addition to the adaptive policy.
@@ -172,6 +180,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             cross_filesystems: false,
+            exclusions: Exclusions::default(),
             node_limit: usize::MAX,
             memory_limit: usize::MAX,
             memory_mode: crate::memory::BudgetMode::Automatic,
@@ -373,6 +382,10 @@ fn result_heap(result: &ScanResult) -> usize {
         .saturating_add(result.scope.capacity())
         .saturating_add(identity)
         .saturating_add(result.app_version.as_ref().map_or(0, String::capacity))
+        .saturating_add(result.exclusions.iter().fold(
+            bytes::<FolderExclusion>(result.exclusions.capacity()),
+            |total, rule| total.saturating_add(rule.path.capacity().saturating_add(16)),
+        ))
 }
 fn bytes<T>(capacity: usize) -> usize {
     capacity.saturating_mul(std::mem::size_of::<T>())
@@ -499,8 +512,13 @@ pub fn scan(
     };
     let path = absolute.as_path();
     let started = Instant::now();
+    let exclusions = options.exclusions.into_recorded();
     let mut result = ScanResult {
-        schema_version: SCHEMA_VERSION,
+        schema_version: if exclusions.is_empty() {
+            UNFILTERED_SCHEMA_VERSION
+        } else {
+            SCHEMA_VERSION
+        },
         started_unix_seconds: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -516,6 +534,7 @@ pub fn scan(
         scope_identity: None,
         app_version: Some(env!("CARGO_PKG_VERSION").into()),
         hard_link_groups: None,
+        exclusions,
         nodes: vec![node(path.to_owned(), None)],
     };
     let root_metadata = fs::symlink_metadata(path);
@@ -604,11 +623,9 @@ pub fn scan(
                 result.nodes[parent].listing_complete = Some(false);
                 break 'walk;
             }
-            if result.nodes.len() >= options.node_limit.max(1) {
-                result.limited = true;
-                result.limit_reason = Some(LimitReason::NodeLimit);
-                result.nodes[parent].complete = false;
-                result.nodes[parent].listing_complete = Some(false);
+            let at_node_limit = result.nodes.len() >= options.node_limit.max(1);
+            if at_node_limit && result.exclusions.is_empty() {
+                stop(&mut result, parent, LimitReason::NodeLimit);
                 break 'walk;
             }
             if let Some(reason) = monitor.check(
@@ -617,7 +634,7 @@ pub fn scan(
                 stop(&mut result, parent, reason);
                 break 'walk;
             }
-            let path = match entry {
+            let child_path = match entry {
                 Ok(entry) => entry.path(),
                 Err(error) => {
                     let before = node_heap(&result.nodes[parent]);
@@ -628,8 +645,20 @@ pub fn scan(
                     continue;
                 }
             };
-            let mut child = node(path, Some(parent));
-            let file = match fs::symlink_metadata(child.path.as_ref().expect("local path")) {
+            let metadata = fs::symlink_metadata(&child_path);
+            if !result.exclusions.is_empty()
+                && metadata.as_ref().is_ok_and(|m| m.is_dir() && !is_link(m))
+                && exclusions::record_skip(&mut result.exclusions, path, &child_path)
+            {
+                // Excluded directories use neither a result slot nor a traversal slot.
+                continue;
+            }
+            if at_node_limit {
+                stop(&mut result, parent, LimitReason::NodeLimit);
+                break 'walk;
+            }
+            let mut child = node(child_path, Some(parent));
+            let file = match metadata {
                 Ok(metadata) => {
                     let file = classify(&mut child, &metadata);
                     if child.kind == Kind::Directory
@@ -767,6 +796,16 @@ pub enum Sort {
     Name,
 }
 impl ScanResult {
+    pub fn completion_key(&self) -> &'static str {
+        if self.incomplete_reason().is_some() {
+            "partial"
+        } else if self.exclusions.is_empty() {
+            "complete"
+        } else {
+            "scan_complete_in_scope"
+        }
+    }
+
     fn hard_link_heap(&self) -> usize {
         self.hard_link_groups
             .as_ref()
@@ -960,7 +999,7 @@ fn scan_storage_monitored(
     root.listing_complete = (root.kind == Kind::Directory).then_some(false);
     let mut seen = HashSet::from([root.locator.clone()]);
     let mut result = ScanResult {
-        schema_version: SCHEMA_VERSION,
+        schema_version: UNFILTERED_SCHEMA_VERSION,
         started_unix_seconds: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -976,6 +1015,7 @@ fn scan_storage_monitored(
         scope_identity: Some(provider_identity(&root.native_locator)),
         app_version: Some(env!("CARGO_PKG_VERSION").into()),
         hard_link_groups: None,
+        exclusions: Vec::new(),
         nodes: vec![root],
     };
     let mut stack = vec![0];

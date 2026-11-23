@@ -1,8 +1,33 @@
 # Result format and import
 
-Exports are UTF-8 JSON documents describing one observed scope. The current source
-writes **schema 3** and reads schemas 1, 2 and 3. Field names, enum values and
+Exports are UTF-8 JSON documents describing one observed scope. Local scans
+with folder exclusions write **schema 4**. Scans without exclusions write
+**schema 3**. The app reads schemas 1 through 4. Field names, enum values and
 numbers are machine-readable and independent of the display language.
+
+## Schema 4
+
+Schema 4 extends schema 3 with a required, nonempty `exclusions` array for local
+filesystem results. Older readers reject version 4 so they cannot mistake an
+excluded subtree for a missing one. Each entry has two fields.
+
+- `path` is a UTF-8 root-relative directory path with `/` separators. Input
+  accepts both `/` and `\` on Windows. Repeated separators and `.` are
+  collapsed. A `..` component removes the preceding component. Absolute paths,
+  drive prefixes on Windows, paths that escape the root, and the root itself
+  are invalid. Paths use exact case and spelling, without Unicode normalization.
+  The array is sorted by components, with duplicate and descendant rules removed.
+  Windows components follow the [Win32 naming rules](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file).
+- `skipped` is true if the scanner encountered a directory at that path and
+  skipped it before listing its contents. False means no skip was observed. The
+  path may be absent, name another kind of object, or lie beyond an incomplete
+  listing. The path still defines the scope for comparison.
+
+Skipped directories and their descendants have no nodes and contribute no
+bytes or file counts. `complete` and `listing_complete` cover the remaining
+area. Intentional exclusions leave error and stop flags to describe failures,
+boundaries, cancellation and limits within that area. Schemas 1 through 3 did
+not support folder exclusions and keep their original completeness guarantees.
 
 ## Schema 3
 
@@ -78,7 +103,7 @@ refuses, with a specific error code shown with a localized explanation:
   exceeds the local import memory budget. The importer checks it before growing
   the result as it streams the file. The parser workspace allowance includes
   the longest raw string token, including in fields the importer skips;
-- `schema_version` outside 1..=3, unknown `kind`/`limit_reason`/`source` values,
+- `schema_version` outside 1..=4, unknown `kind`/`limit_reason`/`source` values,
   wrong types, missing members, duplicate members, trailing data, and
   documents nested beyond 127 levels, including in skipped fields;
 - structure: node 0 must be the only root, every parent index must be smaller
@@ -95,7 +120,11 @@ refuses, with a specific error code shown with a localized explanation:
   is justified; `unknown` at least the children's); a directory marked
   `complete` must have only complete children;
 - schema-2 consistency: identity present and equal to the root, listing flags
-  present exactly on directories and implied by `complete`.
+  present exactly on directories and implied by `complete`;
+- schema-4 consistency: normalized, ordered, nonredundant `exclusions`, local
+  filesystem identity with the corresponding native encoding, direct-child
+  native paths, and no recorded directory at an excluded path. Earlier schemas
+  cannot declare the `exclusions` member.
 
 `errors`, timestamps and the elapsed time are informational and are not
 cross-checked. A deliberately forged but self-consistent file cannot be

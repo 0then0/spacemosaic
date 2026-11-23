@@ -9,6 +9,7 @@ use crate::{
     theme::{self, Appearance},
 };
 mod app;
+mod exclusions;
 mod navigation;
 mod phone;
 mod saved;
@@ -100,6 +101,8 @@ pub struct ExplorerApp {
     sort: Sort,
     allocated: bool,
     cross_filesystems: bool,
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    exclusions: exclusions::Editor,
     rows: Vec<usize>,
     extensions: Vec<(String, u64, scan::Measure)>,
     extension_sort: (ExtensionColumn, bool), // Column and descending order.

@@ -40,6 +40,24 @@ Confirmation does not change completeness or measurement limits, which are
 shown separately as limitations: a partial baseline or current scan,
 different filesystem-boundary settings, missing allocation, or older formats.
 
+## Folder exclusions
+
+Comparisons use the area shared by both results. A rule on either side omits
+the matching directory and its descendants. If one result skipped or recorded
+that directory, the other result's entry at the same path is also outside the
+shared area. When neither result records a directory or skip at that path,
+observed files remain comparable under the usual listing and metadata rules.
+The interface shows the rules on each side and indicates when the sets differ.
+Schemas 1 through 3 did not support intentional folder exclusions.
+Their absence claims still use the listing guarantees of the original schema.
+
+Changes and their totals cover the shared area. The recorded side sizes reflect
+each snapshot’s own scope. A matched directory can report the events inside
+the shared area. Comparison stops if a whole-folder addition, removal or type
+change would include recorded objects outside that area, or if the recorded
+paths cannot be matched to the rules. Confirming that the roots correspond
+does not override either check.
+
 ## Matching objects
 
 Matching starts at the roots and goes down through matched directories only.
@@ -85,11 +103,11 @@ the sum of events below them and is never added again. Totals:
 - net = additions + growth − removals − shrinkage.
 
 All amounts use 128-bit arithmetic, so `u64::MAX` sizes cannot overflow.
-When every compared object is fully measured, net equals the difference of the
-two root sizes (a tested invariant). Otherwise the tile reads "confirmed net
-change", states that it is not a total, and lists how many objects have an
-unknown change or only a lower-bound amount. The difference of known sums is
-never presented as a full result.
+When every compared object is fully measured and the roots contain only objects
+in the shared area, net equals the difference of the two root sizes. When
+some measurements are undetermined, the tile reads "confirmed net change" and
+lists how many objects have an unknown change or only a lower-bound amount.
+The difference of known sums is never presented as a full result.
 
 Logical sizes work everywhere. Allocated sizes are compared only when both
 results measured them, and per object only where both values are known.
@@ -109,10 +127,11 @@ with the new allocation:
 
 A comparison estimates both child indexes, the sibling-key workspace, the work
 queue, the diff rows (96 bytes each, including buffer growth) and the row and
-tree indexes the interface builds (20 bytes per row). It refuses with a memory
-message before allocating when the estimate exceeds the allowance. A refused
-open or comparison leaves every opened result available. The `memory` object in
-a file describes its source scan and is never used as a local limit.
+tree indexes the interface builds (20 bytes per row). For results with folder
+exclusions it also accounts for native rule keys and per-node coverage. It refuses
+with a memory message before allocating when the estimate exceeds the allowance.
+A refused open or comparison leaves every opened result available. The `memory`
+object in a file describes its source scan and is never used as a local limit.
 
 Opening a file for one side, closing a file, choosing another source or
 swapping the direction discards the diff and the same-area confirmation. A new

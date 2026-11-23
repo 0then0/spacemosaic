@@ -55,7 +55,7 @@ fn recursive_aggregation_filter_sort_and_export() {
     assert_eq!(groups[0].0, "txt");
     assert_eq!(groups[0].1, 2);
     let decoded: scan::ScanResult = serde_json::from_slice(&result.json().unwrap()).unwrap();
-    assert_eq!(decoded.schema_version, scan::SCHEMA_VERSION);
+    assert_eq!(decoded.schema_version, scan::UNFILTERED_SCHEMA_VERSION);
     assert_eq!(decoded.nodes[0].logical.known, 20);
     assert!(result.csv().contains("\"txt\",2,20,0,false"));
 }
@@ -84,6 +84,30 @@ fn cancellation_and_memory_limit_keep_explicit_partial_results() {
     assert_eq!(limited.limit_reason, Some(scan::LimitReason::NodeLimit));
     assert_eq!(limited.nodes.len(), 3);
     assert!(!limited.nodes[0].complete);
+}
+
+#[test]
+fn only_included_children_use_node_slots() {
+    let fixture = Fixture::new();
+    let cache = fixture.0.join("cache");
+    fs::create_dir(&cache).unwrap();
+    fs::write(cache.join("payload"), b"hidden").unwrap();
+    let mut options = Options {
+        node_limit: 1,
+        ..Options::default()
+    };
+    options.exclusions.add("cache").unwrap();
+
+    let result = fixture.scan(options.clone());
+    assert_eq!(result.nodes.len(), 1);
+    assert!(result.exclusions[0].skipped);
+    assert_eq!(result.incomplete_reason(), None);
+    assert_eq!(result.nodes[0].listing_complete, Some(true));
+
+    fs::write(fixture.0.join("keep"), b"included").unwrap();
+    let limited = fixture.scan(options);
+    assert_eq!(limited.nodes.len(), 1);
+    assert_eq!(limited.limit_reason, Some(scan::LimitReason::NodeLimit));
 }
 #[test]
 fn missing_root_has_unknown_metadata_instead_of_successful_zero() {
@@ -135,6 +159,31 @@ fn symlink_cycle_is_not_followed_and_hard_links_are_counted_per_path() {
         1
     );
     assert_eq!(result.nodes.iter().filter(|n| n.hard_link).count(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn folder_rules_leave_same_named_files_and_symlinks_in_the_scan() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    fs::write(f.0.join("file"), [0; 11]).unwrap();
+    fs::create_dir(f.0.join("real")).unwrap();
+    fs::write(f.0.join("real/marker"), [0; 5]).unwrap();
+    symlink(f.0.join("real"), f.0.join("alias")).unwrap();
+    let mut options = Options::default();
+    for path in ["file", "alias"] {
+        options.exclusions.add(path).unwrap();
+    }
+    let result = f.scan(options);
+    assert!(result.nodes[0].complete);
+    assert_eq!(result.nodes[0].logical.known, 16);
+    assert!(
+        result
+            .nodes
+            .iter()
+            .any(|node| node.name == "alias" && node.kind == scan::Kind::Link)
+    );
+    assert!(result.exclusions.iter().all(|rule| !rule.skipped));
 }
 #[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 #[test]

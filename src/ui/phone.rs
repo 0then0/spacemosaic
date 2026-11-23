@@ -19,6 +19,11 @@ pub(super) enum PhoneOverlay {
 impl ExplorerApp {
     /// The system Back button follows the visible hierarchy, preserving the scan.
     pub(super) fn phone_back(&mut self) -> bool {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        if self.exclusions.open {
+            self.exclusions.open = false;
+            return true;
+        }
         if self.settings_open {
             self.settings_open = false;
         } else if let Some(overlay) = self.phone_overlay.take() {
@@ -103,6 +108,10 @@ impl ExplorerApp {
                     if Self::phone_button(ui, t("choose")) {
                         self.choose();
                     }
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    if Self::phone_button(ui, t("scan_edit_exclusions")) {
+                        self.exclusions.open = true;
+                    }
                     if self.open_job.is_none() && Self::phone_button(ui, t("open_saved")) {
                         self.open_saved_dialog();
                     }
@@ -169,11 +178,7 @@ impl ExplorerApp {
         self.open_status(ui);
         let result = self.result.as_ref().unwrap();
         let node = &result.nodes[scope];
-        let status = if result.cancelled || result.limited || !result.nodes[0].complete {
-            "partial"
-        } else {
-            "complete"
-        };
+        let status = result.completion_key();
         ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = 20.0;
             ui.horizontal(|ui| {
@@ -532,6 +537,10 @@ impl ExplorerApp {
                     }
                     if Self::phone_button(ui, t("settings")) {
                         self.settings_open = true;
+                    }
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    if Self::phone_button(ui, t("scan_edit_exclusions")) {
+                        self.exclusions.open = true;
                     }
                     if Self::phone_button(ui, t("rescan")) {
                         self.phone_overlay = None;

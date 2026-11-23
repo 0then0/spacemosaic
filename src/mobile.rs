@@ -157,6 +157,7 @@ pub struct Setup {
     pub before: Option<SetupOperand>,
     pub after: Option<SetupOperand>,
     pub assessment: Option<crate::compare::ScopeAssessment>,
+    pub exclusion_limitation: Option<crate::compare::Limitation>,
     pub confirmed: bool,
     pub comparing: bool,
     pub opening: bool,
@@ -169,7 +170,7 @@ pub struct SetupOperand {
     pub live: bool,
     pub captured: u64,
     pub objects: u64,
-    pub partial: bool,
+    pub completion_key: &'static str,
 }
 #[derive(Clone, Debug)]
 pub enum SetupFailure {
@@ -194,7 +195,7 @@ fn setup_page(language: usize, setup: &Setup) -> Value {
             o.name,
             crate::i18n::timestamp(o.captured),
             crate::i18n::counted(language, o.objects, "object"),
-            t(if o.partial { "partial" } else { "complete" })
+            t(o.completion_key)
         ),
         None => t("compare_not_chosen").to_owned(),
     };
@@ -229,6 +230,9 @@ fn setup_page(language: usize, setup: &Setup) -> Value {
             .to_owned(),
         );
         lines.push(scope_text(assessment));
+        if let Some(limitation) = setup.exclusion_limitation {
+            lines.push(t(limitation.key()).to_owned());
+        }
         needs_confirmation = assessment.verdict == ScopeVerdict::Insufficient;
         can_start = !setup.comparing
             && !setup.opening
@@ -241,7 +245,10 @@ fn setup_page(language: usize, setup: &Setup) -> Value {
             (&setup.before, "cmp_limit_baseline_partial"),
             (&setup.after, "cmp_limit_current_partial"),
         ] {
-            if operand.as_ref().is_some_and(|o| o.partial) {
+            if operand
+                .as_ref()
+                .is_some_and(|o| o.completion_key == "partial")
+            {
                 lines.push(t(key).to_owned());
             }
         }
@@ -567,13 +574,24 @@ fn result_page(
         }).collect();
         (rows.len(), offset, entries)
     };
-    let mut response = json!({"generation":generation,"status":if result.cancelled || result.limited || !result.nodes[0].complete {"partial"} else {"complete"},
+    let mut response = json!({"generation":generation,"status":result.completion_key(),
         "scope":result.scope,"summary":format!("{} · {} · {}",crate::i18n::counted(language,result.nodes.len() as u64,"object"),display_measure(language,result.nodes[0].logical),crate::i18n::counted(language,result.errors,"error")),
         "directory":directory,"parent":result.nodes[directory].parent,"name":result.nodes[directory].name,
         "offset":offset,"total":total});
     response["allocated_available"] = json!(allocated_available);
     if mode == "changes" {
         response["summary"] = json!(changes_page(comparison, language, request).3);
+    } else if !result.exclusions.is_empty() {
+        let count = |n: usize| crate::i18n::integer(language, n as u64);
+        let skipped = result.exclusions.iter().filter(|rule| rule.skipped).count();
+        response["summary"] = json!(format!(
+            "{} · {} ({}) · {}: {}",
+            response["summary"].as_str().unwrap_or_default(),
+            crate::i18n::text(language, "scan_applied_exclusions"),
+            count(result.exclusions.len()),
+            crate::i18n::text(language, "scan_skipped_folders"),
+            count(skipped),
+        ));
     }
     if let Some(memory) = &result.memory {
         let summary = response["summary"].as_str().unwrap_or_default();
@@ -826,6 +844,7 @@ mod tests {
             scope_identity: None,
             app_version: None,
             hard_link_groups: None,
+            exclusions: Vec::new(),
             nodes,
         }
     }
@@ -1140,7 +1159,7 @@ mod tests {
             live: false,
             captured,
             objects: 12,
-            partial,
+            completion_key: if partial { "partial" } else { "complete" },
         }
     }
     fn assessment(verdict: crate::compare::ScopeVerdict) -> crate::compare::ScopeAssessment {

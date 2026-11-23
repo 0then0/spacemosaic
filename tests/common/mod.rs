@@ -209,6 +209,7 @@ impl Builder {
             }),
             app_version: (!self.v1).then(|| "test".into()),
             hard_link_groups: None,
+            exclusions: Vec::new(),
             nodes: {
                 let _ = incomplete;
                 self.nodes

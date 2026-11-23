@@ -319,6 +319,7 @@ fn fixture() -> ExplorerApp {
         scope_identity: None,
         app_version: None,
         hard_link_groups: None,
+        exclusions: Vec::new(),
         nodes,
     }));
     app.language = 0;
@@ -1330,6 +1331,7 @@ fn a_single_group_click_opens_all_25000_items_without_recursive_grouping() {
         scope_identity: None,
         app_version: None,
         hard_link_groups: None,
+        exclusions: Vec::new(),
         nodes,
     }));
     app.navigation.selected = Some(25000);
@@ -2077,6 +2079,7 @@ fn a_large_comparison_virtualizes_rows_and_stays_interactive() {
         scope_identity: None,
         app_version: None,
         hard_link_groups: None,
+        exclusions: Vec::new(),
         nodes: nodes.clone(),
     };
     let new = variant(&old, |nodes| {
@@ -2562,6 +2565,37 @@ fn files_directory(label: &str) -> (preferences::tests::Fixture, PathBuf) {
     let files = preferences::tests::Fixture::new();
     let directory = files.path().with_extension(label);
     (files, directory)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[test]
+fn editing_rules_after_launch_affects_only_the_next_scan() {
+    let (_files, root) = files_directory("exclusions");
+    std::fs::create_dir_all(root.join("cache")).unwrap();
+    std::fs::write(root.join("cache/payload"), b"hidden").unwrap();
+    let context = egui::Context::default();
+    let mut app = ExplorerApp::empty();
+    let wait_for_result = |app: &mut ExplorerApp| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.job.is_some() {
+            app.poll(&context);
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        app.live.clone().unwrap()
+    };
+
+    app.exclusions.rules.add("cache").unwrap();
+    app.start(root);
+    app.exclusions.rules.remove(0);
+    let excluded = wait_for_result(&mut app);
+    assert!(excluded.exclusions[0].skipped);
+    assert_eq!(excluded.nodes[0].logical.known, 0);
+
+    app.rescan();
+    let full = wait_for_result(&mut app);
+    assert!(full.exclusions.is_empty());
+    assert_eq!(full.nodes[0].logical.known, 6);
 }
 
 #[test]
@@ -3452,6 +3486,45 @@ fn the_native_comparison_page_is_driven_by_the_same_state() {
     assert_eq!(app.view, View::Saved);
     app.native_compare_command(Command::ConfirmScope(true));
     assert!(app.changes.confirm_scope);
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[test]
+fn native_pages_report_the_scope_of_reopened_desktop_snapshots() {
+    use std::sync::{Mutex, atomic::AtomicBool};
+
+    let (_files, work) = files_directory("native-exclusions");
+    let folder = work.join("folder");
+    std::fs::create_dir_all(folder.join("cache")).unwrap();
+    let scan = |options| scan::scan(&folder, options, &AtomicBool::new(false), &Mutex::default());
+    let before = write_snapshot(&work, "full.json", &scan(scan::Options::default()));
+    let mut options = scan::Options::default();
+    options.exclusions.add("cache").unwrap();
+    let after = write_snapshot(&work, "filtered.json", &scan(options));
+    let mut app = reopened(&before, &after, egui::vec2(1180.0, 900.0));
+    app.open_changes();
+    let setup = app.native_setup();
+
+    let _session = bridge::SESSION_TEST_LOCK.lock().unwrap();
+    let generation = bridge::begin();
+    let result = app.second.as_ref().unwrap().result.clone();
+    crate::mobile::publish_view(generation, result, true, None);
+    crate::mobile::publish_setup(generation, setup);
+    let page =
+        |request| serde_json::from_str::<serde_json::Value>(&crate::mobile::page(request)).unwrap();
+    let saved = page(r#"{"language":"en"}"#);
+    assert_eq!(saved["status"], "scan_complete_in_scope");
+    assert!(
+        saved["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Skipped folders: 1")
+    );
+
+    let comparison = page(r#"{"language":"en","mode":"changes"}"#);
+    let lines = comparison["compare"]["lines"].to_string();
+    assert!(lines.contains(i18n::text(0, "cmp_different_exclusions")));
+    assert!(lines.contains(i18n::text(0, "scan_complete_in_scope")));
 }
 
 #[test]

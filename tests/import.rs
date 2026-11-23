@@ -569,7 +569,7 @@ fn large_partial_snapshot() -> ScanResult {
     builder.deny(locked);
     builder.abort_listing(0);
     let mut result = builder.build();
-    result.schema_version = scan::SCHEMA_VERSION;
+    result.schema_version = scan::UNFILTERED_SCHEMA_VERSION;
     result.limited = true;
     result.limit_reason = Some(scan::LimitReason::MemoryLimit);
     result.memory = Some(memory::Diagnostics {
@@ -593,7 +593,7 @@ fn a_large_export_with_repeated_extensions_reopens_within_budget() {
     };
     let imported = import::import_file(&path, ample, &cancel, &progress).unwrap();
     assert_eq!(imported.nodes.len(), file_count + LARGE_GROUPS + 2);
-    assert_eq!(imported.schema_version, scan::SCHEMA_VERSION);
+    assert_eq!(imported.schema_version, scan::UNFILTERED_SCHEMA_VERSION);
     let root = &imported.nodes[0];
     for total in [root.logical, root.allocated] {
         assert_eq!(total.known, file_count as u64 * FILE_BYTES);
@@ -633,7 +633,7 @@ fn recorded_scan_budget_cannot_raise_the_local_import_limit() {
         builder.file(0, &format!("file-{file}"), 1);
     }
     let mut result = builder.build();
-    result.schema_version = scan::SCHEMA_VERSION;
+    result.schema_version = scan::UNFILTERED_SCHEMA_VERSION;
     let tight = Limits {
         memory_limit: 256 * 1024,
         ..Limits::DESKTOP
@@ -678,7 +678,7 @@ fn export_then_import_works_after_the_source_folder_is_gone() {
         &AtomicU64::new(0),
     )
     .unwrap();
-    assert_eq!(imported.schema_version, scan::SCHEMA_VERSION);
+    assert_eq!(imported.schema_version, scan::UNFILTERED_SCHEMA_VERSION);
     assert_eq!(imported.nodes[0].logical.known, 1234 + 77);
     assert!(
         imported.nodes.iter().all(|n| n.path.is_none()),
@@ -701,6 +701,149 @@ fn export_then_import_works_after_the_source_folder_is_gone() {
 }
 
 #[test]
+fn folder_exclusions_round_trip_and_keep_changes_in_the_shared_area() {
+    let source = Folder::new("excluded-source");
+    for (path, bytes) in [("cache", 11), ("cache-old", 7), ("other/cache", 5)] {
+        let dir = source.0.join(path);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("marker.bin"), vec![0; bytes]).unwrap();
+    }
+    fs::write(source.0.join("removed.bin"), [0; 3]).unwrap();
+    let run = |options| {
+        scan::scan(
+            &source.0,
+            options,
+            &AtomicBool::new(false),
+            &Mutex::new(Progress::default()),
+        )
+    };
+    let full = run(Options::default());
+    assert_eq!(full.nodes[0].logical.known, 26);
+    assert_eq!(full.extensions()[0].1, 4);
+    fs::remove_file(source.0.join("removed.bin")).unwrap();
+
+    let mut options = Options::default();
+    for path in ["./cache//", "cache/nested", "nonexistent"] {
+        options.exclusions.add(path).unwrap();
+    }
+    // An accidental read_dir would fail here on Unix when the process has no
+    // privilege to bypass the mode bits. An unfiltered control observes the error.
+    #[cfg(unix)]
+    let (permissions, denied) = {
+        use std::os::unix::fs::PermissionsExt;
+        let cache = source.0.join("cache");
+        let permissions = fs::metadata(&cache).unwrap().permissions();
+        fs::set_permissions(&cache, fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = fs::read_dir(&cache)
+            .is_err()
+            .then(|| run(Options::default()));
+        (permissions, denied)
+    };
+    let filtered = run(options);
+    #[cfg(unix)]
+    {
+        fs::set_permissions(source.0.join("cache"), permissions).unwrap();
+        if let Some(denied) = denied {
+            assert!(denied.nodes.iter().any(|node| {
+                node.name == "cache"
+                    && node.parent == Some(0)
+                    && node.error.as_deref() == Some("permission_denied")
+            }));
+        }
+    }
+    assert_eq!(filtered.nodes[0].logical.known, 12);
+    assert_eq!(filtered.extensions()[0].1, 2);
+    assert!(filtered.nodes[0].complete);
+    assert_eq!(filtered.errors, 0);
+    assert_eq!(filtered.completion_key(), "scan_complete_in_scope");
+    assert_eq!(filtered.schema_version, scan::SCHEMA_VERSION);
+    assert_eq!(
+        filtered
+            .exclusions
+            .iter()
+            .map(|r| (r.path.as_str(), r.skipped))
+            .collect::<Vec<_>>(),
+        [("cache", true), ("nonexistent", false)]
+    );
+
+    let saved = Folder::new("excluded-snapshots");
+    let round_trip = |name: &str, result: &ScanResult| {
+        let path = saved.0.join(name);
+        scan::write_export(result, &path, true).unwrap();
+        let imported = import::import_file(
+            &path,
+            Limits::DESKTOP,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .unwrap();
+        assert_eq!(imported.json().unwrap(), result.json().unwrap());
+        Arc::new(imported)
+    };
+    let full = round_trip("full.json", &full);
+    let filtered = round_trip("filtered.json", &filtered);
+    for (before, after, expected, net) in [
+        (&full, &filtered, Status::Removed, -3),
+        (&filtered, &full, Status::Added, 3),
+    ] {
+        let diff = compare::compare(
+            before.clone(),
+            after.clone(),
+            false,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(
+            diff.limitations
+                .contains(&compare::Limitation::DifferentExclusions)
+        );
+        assert!((0..diff.nodes.len()).all(|index| diff.path(index) != "cache"));
+        assert_eq!(status(&diff, "cache-old/marker.bin"), Status::SameSize);
+        assert_eq!(status(&diff, "other/cache/marker.bin"), Status::SameSize);
+        assert_eq!(status(&diff, "removed.bin"), expected);
+        assert_eq!(diff.totals(Dimension::Logical).net(), net);
+    }
+}
+
+#[test]
+fn only_the_exclusion_schema_accepts_canonical_rules_for_local_scans() {
+    let mut document = value(&sample(false));
+    let applied = json!([{"path":"cache", "skipped":true}]);
+    document["exclusions"] = applied.clone();
+    assert_eq!(
+        code(load(&serde_json::to_vec(&document).unwrap()).unwrap_err()),
+        "exclusions"
+    );
+    document["schema_version"] = json!(scan::SCHEMA_VERSION);
+    for rules in [
+        json!([]),
+        json!([{"path":"../outside", "skipped":false}]),
+        json!([{"path":"./cache", "skipped":false}]),
+        json!([{"path":"cache", "skipped":true}, {"path":"cache", "skipped":true}]),
+        json!([{"path":"cache", "skipped":false}, {"path":"cache/nested", "skipped":true}]),
+        json!([{"path":"docs", "skipped":true}]), // A recorded directory at this path contradicts the rule.
+    ] {
+        document["exclusions"] = rules;
+        assert_eq!(
+            code(load(&serde_json::to_vec(&document).unwrap()).unwrap_err()),
+            "exclusions"
+        );
+    }
+    document.as_object_mut().unwrap().remove("exclusions");
+    assert_eq!(
+        code(load(&serde_json::to_vec(&document).unwrap()).unwrap_err()),
+        "exclusions"
+    );
+    document["exclusions"] = applied;
+    assert!(load(&serde_json::to_vec(&document).unwrap()).is_ok());
+    document["scope_identity"]["source"] = json!("provider");
+    assert_eq!(
+        code(load(&serde_json::to_vec(&document).unwrap()).unwrap_err()),
+        "exclusions"
+    );
+}
+
+#[test]
 fn real_scans_record_identity_and_per_directory_listing_state() {
     let source = Folder::new("identity");
     fs::create_dir(source.0.join("inner")).unwrap();
@@ -710,7 +853,7 @@ fn real_scans_record_identity_and_per_directory_listing_state() {
         &AtomicBool::new(false),
         &Mutex::new(Progress::default()),
     );
-    assert_eq!(scanned.schema_version, scan::SCHEMA_VERSION);
+    assert_eq!(scanned.schema_version, scan::UNFILTERED_SCHEMA_VERSION);
     let identity = scanned.scope_identity.as_ref().unwrap();
     assert_eq!(identity.root, scanned.nodes[0].native_locator);
     assert_eq!(identity.source, scan::SourceKind::Filesystem);

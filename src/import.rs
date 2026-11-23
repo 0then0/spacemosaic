@@ -2,7 +2,10 @@
 //! parsed as a stream, limited in input bytes and estimated memory, and
 //! checked structurally before any view or comparison can use it. Nothing in it
 //! is ever used to open, reveal or rescan a location.
-use crate::scan::{Kind, LimitReason, Measure, Node, SCHEMA_VERSION, ScanResult, ScopeIdentity};
+use crate::scan::{
+    FolderExclusion, Kind, LimitReason, MAX_EXCLUSION_PATH_BYTES, Measure, NativeExclusions, Node,
+    SCHEMA_VERSION, ScanResult, ScopeIdentity, SourceKind, normalized_rules,
+};
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use std::{
     cell::{Cell, RefCell},
@@ -403,6 +406,60 @@ impl<'de> Visitor<'de> for Nodes<'_> {
     }
 }
 
+struct ExclusionList<'a>(&'a Context<'a>);
+impl<'de> DeserializeSeed<'de> for ExclusionList<'_> {
+    type Value = Vec<FolderExclusion>;
+    fn deserialize<D: de::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_seq(self)
+    }
+}
+impl<'de> Visitor<'de> for ExclusionList<'_> {
+    type Value = Vec<FolderExclusion>;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an array of folder exclusions")
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let context = self.0;
+        let mut rules: Vec<FolderExclusion> = Vec::new();
+        while let Some(rule) = seq.next_element::<FolderExclusion>()? {
+            if context.cancel.load(Ordering::Relaxed) {
+                return Err(context.fail(ImportError::Cancelled));
+            }
+            if rule.path.len() > MAX_EXCLUSION_PATH_BYTES {
+                return Err(context.fail(exclusions_error()));
+            }
+            context.keep_metadata(text_bytes(rule.path.capacity()))?;
+            if rules.len() == rules.capacity() {
+                let old = rules.capacity();
+                let next = old.max(2).saturating_mul(2);
+                let size = size_of::<FolderExclusion>();
+                context.keep_metadata((next - old).saturating_mul(size))?;
+                context
+                    .check_memory(
+                        context
+                            .node_bytes
+                            .get()
+                            .saturating_add(old.saturating_mul(size)),
+                        context.result_peak.get(),
+                    )
+                    .map_err(|error| context.fail(error))?;
+                rules
+                    .try_reserve_exact(next - old)
+                    .map_err(|_| context.fail(ImportError::MemoryLimit))?;
+            }
+            rules.push(rule);
+        }
+        Ok(rules)
+    }
+}
+
+fn exclusions_error() -> ImportError {
+    ImportError::Invalid {
+        code: "exclusions",
+        node: None,
+    }
+}
+
 struct Document<'a>(&'a Context<'a>);
 impl<'de> DeserializeSeed<'de> for Document<'_> {
     type Value = ScanResult;
@@ -432,6 +489,7 @@ impl<'de> Visitor<'de> for Document<'_> {
         let mut identity = None::<Option<ScopeIdentity>>;
         let mut app_version = None::<Option<String>>;
         let mut memory = None::<Option<crate::memory::Diagnostics>>;
+        let mut exclusions = None::<Vec<FolderExclusion>>;
         let mut nodes = None::<Vec<Node>>;
         macro_rules! once {
             ($slot:ident, $value:expr) => {{
@@ -483,6 +541,7 @@ impl<'de> Visitor<'de> for Document<'_> {
                     value
                 }),
                 "memory" => once!(memory, map.next_value()?),
+                "exclusions" => once!(exclusions, map.next_value_seed(ExclusionList(context))?),
                 "nodes" => once!(nodes, map.next_value_seed(Nodes(context))?),
                 _ => {
                     // Unknown fields from later minor additions are skipped, not trusted.
@@ -496,8 +555,14 @@ impl<'de> Visitor<'de> for Document<'_> {
                 node: None,
             })
         };
+        let schema_version = version.ok_or_else(missing)?;
+        let exclusions = match exclusions {
+            Some(rules) if schema_version == SCHEMA_VERSION && !rules.is_empty() => rules,
+            None if schema_version < SCHEMA_VERSION => Vec::new(),
+            _ => return Err(context.fail(exclusions_error())),
+        };
         Ok(ScanResult {
-            schema_version: version.ok_or_else(missing)?,
+            schema_version,
             started_unix_seconds: started.ok_or_else(missing)?,
             elapsed_millis: elapsed.ok_or_else(missing)?,
             scope: scope.ok_or_else(missing)?,
@@ -510,6 +575,7 @@ impl<'de> Visitor<'de> for Document<'_> {
             app_version: app_version.flatten(),
             memory: memory.flatten(),
             hard_link_groups: None,
+            exclusions,
             nodes: nodes.ok_or_else(missing)?,
         })
     }
@@ -542,7 +608,7 @@ impl Sum {
 
 /// Relationship checks that need the complete tree. Aggregates are recomputed from
 /// the children and must agree; they are never accepted on trust.
-fn check_tree(result: &ScanResult, cancel: &AtomicBool) -> Result<(), ImportError> {
+fn check_tree(result: &ScanResult, context: &Context<'_>) -> Result<(), ImportError> {
     let nodes = &result.nodes;
     let Some(root) = nodes.first() else {
         return Err(ImportError::Invalid {
@@ -593,11 +659,34 @@ fn check_tree(result: &ScanResult, cancel: &AtomicBool) -> Result<(), ImportErro
             node: None,
         });
     }
+    let exclusions = if result.exclusions.is_empty() {
+        None
+    } else {
+        let windows = family == Encoding::Windows;
+        if family == Encoding::Opaque
+            || !result.scope_identity.as_ref().is_some_and(|identity| {
+                identity.source == SourceKind::Filesystem
+                    && (identity.platform == "windows") == windows
+                    && !matches!(identity.platform.as_str(), "android" | "ios")
+            })
+            || !normalized_rules(&result.exclusions, windows)
+        {
+            return Err(exclusions_error());
+        }
+        context.check_memory(
+            0,
+            context
+                .result_peak
+                .get()
+                .saturating_add(NativeExclusions::estimated_bytes(result.exclusions.iter())),
+        )?;
+        Some(NativeExclusions::new(windows, result.exclusions.iter()))
+    };
     let mut logical = validation_buffer(nodes.len(), Sum::default())?;
     let mut allocated = validation_buffer(nodes.len(), Sum::default())?;
     let mut all_complete = validation_buffer(nodes.len(), true)?;
     for index in (0..nodes.len()).rev() {
-        if cancel.load(Ordering::Relaxed) {
+        if context.cancel.load(Ordering::Relaxed) {
             return Err(ImportError::Cancelled);
         }
         let node = &nodes[index];
@@ -628,6 +717,18 @@ fn check_tree(result: &ScanResult, cancel: &AtomicBool) -> Result<(), ImportErro
         }
         if let Some(parent) = node.parent {
             let parent_native = &nodes[parent].native_locator;
+            if let Some(paths) = &exclusions {
+                if !paths.is_direct_child(parent_native, &node.native_locator) {
+                    return Err(invalid("locator_hierarchy", index));
+                }
+                if node.kind == Kind::Directory
+                    && paths
+                        .matching_rule(&root.native_locator, &node.native_locator)
+                        .is_some()
+                {
+                    return Err(invalid("exclusions", index));
+                }
+            }
             if family != Encoding::Opaque {
                 // Child identity is derived from the exact bytes after the parent's.
                 let tail = node.native_locator.strip_prefix(parent_native.as_str());
@@ -829,7 +930,7 @@ pub fn import_reader(
     if cancel.load(Ordering::Relaxed) {
         return Err(ImportError::Cancelled);
     }
-    check_tree(&result, cancel)?;
+    check_tree(&result, &context)?;
     Ok(result)
 }
 

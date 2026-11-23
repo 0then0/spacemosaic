@@ -340,15 +340,19 @@ impl ExplorerApp {
                 live: view == View::Live,
                 captured: result.started_unix_seconds,
                 objects: result.nodes.len() as u64,
-                partial: compare::is_partial(&result),
+                completion_key: result.completion_key(),
             })
         };
+        let operands = self.operands();
         Setup {
             before: operand(self.changes.baseline),
             after: operand(self.changes.current),
-            assessment: self
-                .operands()
-                .map(|(baseline, current)| compare::assess_scope(&baseline, &current)),
+            assessment: operands
+                .as_ref()
+                .map(|(baseline, current)| compare::assess_scope(baseline, current)),
+            exclusion_limitation: operands
+                .as_ref()
+                .and_then(|(baseline, current)| compare::exclusion_limitation(baseline, current)),
             confirmed: self.changes.confirm_scope,
             comparing: self.changes.job.is_some(),
             opening: self.open_job.is_some(),
@@ -608,6 +612,12 @@ impl ExplorerApp {
                 Err(CompareError::MemoryLimit) => {
                     self.changes.failure = Some(CompareFailure::Other("compare_memory_limit"));
                 }
+                Err(CompareError::ExclusionsCannotAlign) => {
+                    self.changes.failure = Some(CompareFailure::Other("cmp_exclusions_unmapped"));
+                }
+                Err(CompareError::ExclusionsOverlapChange) => {
+                    self.changes.failure = Some(CompareFailure::Other("cmp_exclusions_overlap"));
+                }
                 Err(CompareError::Cancelled) => {}
             }
             self.sync_native_result();
@@ -791,11 +801,7 @@ impl ExplorerApp {
             "{} · {} · {}",
             self.captured(result),
             i18n::counted(self.language, result.nodes.len() as u64, "object"),
-            t(if compare::is_partial(result) {
-                "partial"
-            } else {
-                "complete"
-            })
+            t(result.completion_key())
         )
     }
     /// File name for an opened result, scan root name for the current scan, with
@@ -1008,6 +1014,7 @@ impl ExplorerApp {
                         if result.schema_version < 2 {
                             ui.label(RichText::new(t("saved_schema_one")).small());
                         }
+                        ui.push_id(title, |ui| exclusions::show_rules(ui, language, &result));
                     }
                     None => {
                         ui.label(RichText::new(t("compare_not_chosen")).strong());
@@ -1137,6 +1144,9 @@ impl ExplorerApp {
             ScopeVerdict::Incompatible => "cmp_verdict_incompatible",
         }));
         ui.label(RichText::new(self.scope_text(&assessment)).small());
+        if let Some(limitation) = compare::exclusion_limitation(&baseline, &current) {
+            ui.label(RichText::new(t(limitation.key())).small());
+        }
         let mut can_compare = true;
         match assessment.verdict {
             ScopeVerdict::Incompatible => can_compare = false,
@@ -1872,6 +1882,11 @@ impl ExplorerApp {
             )
             .truncate(),
         );
+        if let Some(limitation) =
+            compare::exclusion_limitation(&comparison.baseline, &comparison.current)
+        {
+            ui.label(RichText::new(t(limitation.key())).small());
+        }
         ui.separator();
         let tree = self.changes.mode == ChangeMode::Tree;
         let count = if tree {

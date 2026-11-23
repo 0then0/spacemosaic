@@ -22,6 +22,11 @@ including accessibility and in-place upgrades, remains separate from build check
 
 - Choose a folder with the system dialog, drag a folder into the desktop window,
   or pass its path on the command line.
+- On desktop, open **Folder exclusions** before choosing a folder, dropping one,
+  or selecting **Rescan**. Add exact paths relative to the scan root, such as
+  `.git` or `packages/web/node_modules`. Match the spelling and case of every
+  component. You can remove rules in the same dialog. The list applies to
+  subsequent scans in this session, and each scan captures its own copy.
 - Scan on a background worker with progress, cancellation, and explicit partial
   results. Starting another scan replaces the previous session.
 - Expand folders in the tree above the space map. On wide windows, drag the
@@ -51,8 +56,9 @@ Export a result as JSON, close the application, and later choose **Open saved
 result…** (or drop the file on the window, or pass it on the command line). The
 folder is not read again: the saved tree, sizes, unknown values, errors and
 partial-scan flags are shown under a **Saved result** banner with the capture
-date. Paths and URIs in the file are display text only; no action ever opens,
-reveals or rescans them. Schema 1 exports from earlier releases open too.
+date. An **Applied folder exclusions** section shows the rules and which folders
+were skipped. Paths and URIs in the file are display text only. Schema 1 exports
+from earlier releases open too.
 
 To see what grew, scan the same folder normally, then choose **Compare with
 current scan**. The baseline is the saved result and the current result is the
@@ -64,6 +70,11 @@ be searched, filtered, sorted by largest growth or decrease, and opened in the
 result they came from. Totals show additions, removals and changes of existing
 objects separately; an incomplete comparison shows a *confirmed* change and the
 number of undetermined objects, not a total.
+
+Comparisons omit paths excluded by either result and show when the rule sets
+differ. Changes are measured within the shared area. If a whole-folder change
+includes an excluded path and its shared size cannot be determined, comparison
+stops with an explanation.
 
 A comparison matches recorded sizes by exact name. It does not prove deletion or
 freed space, equal sizes do not prove unchanged contents, and renames or moves
@@ -89,6 +100,11 @@ SpaceMosaic measures the **selected scope**, not total device usage or volume
 capacity. Logical size and allocated space are separate. Allocated bytes are
 available from Unix metadata; unsupported values, including Windows allocation
 metadata, stay unknown. Neither number guarantees reclaimable space.
+
+Excluded directories are skipped before their contents are listed. Their files
+contribute neither bytes nor file counts. A result marked **Complete within
+scope** finished scanning the area outside its configured exclusions. Read
+errors, cancellation and resource limits are still reported as partial results.
 
 Hard-linked files are counted once **per path**, without deduplication. Shared
 APFS/CoW blocks, filesystem compression, and sparse allocation prevent these

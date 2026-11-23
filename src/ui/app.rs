@@ -104,6 +104,8 @@ impl ExplorerApp {
             sort: Sort::Size,
             allocated: false,
             cross_filesystems: false,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            exclusions: Default::default(),
             rows: Vec::new(),
             extensions: Vec::new(),
             extension_sort: (ExtensionColumn::Size, true),
@@ -154,6 +156,8 @@ impl ExplorerApp {
             path.clone(),
             scan::Options {
                 cross_filesystems: self.cross_filesystems,
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                exclusions: self.exclusions.rules.clone(),
                 memory_mode: self.preferences.scan_memory,
                 ..Default::default()
             },
@@ -671,6 +675,10 @@ impl ExplorerApp {
                     {
                         self.rescan();
                     }
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    if ui.button(t("scan_edit_exclusions")).clicked() {
+                        self.exclusions.open = true;
+                    }
                     if (self.job.is_some() || self.mobile_busy)
                         && ui
                             .add(
@@ -768,13 +776,7 @@ impl ExplorerApp {
                     result.nodes[0].logical
                 };
                 ui.label(RichText::new(measure(language, total)).size(28.0));
-                ui.label(t(
-                    if result.cancelled || result.limited || !result.nodes[0].complete {
-                        "partial"
-                    } else {
-                        "complete"
-                    },
-                ));
+                ui.label(t(result.completion_key()));
                 ui.label(i18n::counted(language, result.nodes.len() as u64, "object"));
                 ui.label(i18n::counted(language, result.errors, "error"));
                 ui.label(format!(
@@ -793,6 +795,7 @@ impl ExplorerApp {
             if let Some(reason) = result.incomplete_reason() {
                 ui.label(t(reason));
             }
+            exclusions::show_rules(ui, language, result);
         }
         if self.preferences_write_failed {
             ui.label(t("preferences_save_failed"));
@@ -1344,6 +1347,8 @@ impl ExplorerApp {
             self.search.repaint(ui.ctx());
         }
         self.settings_window(ui.ctx());
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        self.exclusions.show(ui.ctx(), self.language);
         #[cfg(any(target_os = "android", target_os = "ios"))]
         crate::mobile::focus(
             if self.compact_layout && self.phone_home {

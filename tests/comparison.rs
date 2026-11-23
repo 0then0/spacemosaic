@@ -19,6 +19,154 @@ fn run(old: scan::ScanResult, new: scan::ScanResult) -> Comparison {
     compare::compare(Arc::new(old), Arc::new(new), true, &AtomicBool::new(false)).unwrap()
 }
 
+fn with_exclusion(mut result: scan::ScanResult, path: &str, skipped: bool) -> scan::ScanResult {
+    result.schema_version = scan::SCHEMA_VERSION;
+    result.exclusions.push(scan::FolderExclusion {
+        path: path.into(),
+        skipped,
+    });
+    result
+}
+
+#[test]
+fn different_exclusions_keep_the_intersection_even_when_one_scan_is_partial() {
+    let mut old = Builder::fs("/data");
+    let other = old.dir(0, "other");
+    let nested_cache = old.dir(other, "cache");
+    old.file(nested_cache, "ignore.bin", 100);
+    old.file(other, "removed.bin", 7);
+    old.file(0, "not-observed.bin", 14);
+    let old = with_exclusion(old.build(), "cache", true);
+
+    let mut new = Builder::fs("/data");
+    let cache = new.dir(0, "cache");
+    new.file(cache, "ignored.bin", 200);
+    new.dir(0, "other");
+    new.abort_listing(0);
+    new.cancelled = true;
+    let new = with_exclusion(new.build(), "other/cache", true);
+
+    let diff = run(old, new);
+    assert!(diff.limitations.contains(&Limitation::DifferentExclusions));
+    assert!(diff.limitations.contains(&Limitation::CurrentPartial));
+    let totals = diff.totals(LOGICAL);
+    assert_eq!((totals.added, totals.removed), (0, 7));
+    assert!(!totals.is_complete());
+    assert_eq!(status(&diff, "other/removed.bin"), Status::Removed);
+    let unobserved = find(&diff, "not-observed.bin");
+    assert_eq!(
+        diff.nodes[unobserved].reason(LOGICAL),
+        Reason::CurrentNotObserved
+    );
+    assert!(
+        (0..diff.nodes.len()).all(|i| !["cache", "other/cache"].contains(&diff.path(i).as_str()))
+    );
+}
+
+#[test]
+fn equal_rules_define_the_same_scope_even_if_only_one_scan_skipped_a_folder() {
+    let mut old = Builder::fs("/data");
+    old.file(0, "file.bin", 3);
+    let old = with_exclusion(old.build(), "cache", true);
+    let mut new = Builder::fs("/data");
+    new.file(0, "file.bin", 5);
+    let new = with_exclusion(new.build(), "cache", false);
+    let diff = run(old, new);
+    assert!(diff.limitations.contains(&Limitation::SharedExclusions));
+    assert!(!diff.limitations.contains(&Limitation::DifferentExclusions));
+    assert_eq!(diff.totals(LOGICAL).net(), 2);
+    assert!(diff.totals(LOGICAL).is_complete());
+}
+
+#[test]
+fn folder_rules_preserve_observed_file_growth_and_removal_at_the_same_path() {
+    let mut old = Builder::fs("/data");
+    old.file(0, "cache", 3);
+    let old = old.build();
+    let mut newer = Builder::fs("/data");
+    newer.file(0, "cache", 5);
+    let newer = with_exclusion(newer.build(), "cache", false);
+    let absent = with_exclusion(Builder::fs("/data").build(), "cache", false);
+
+    let diff = run(old.clone(), newer);
+    assert_eq!(status(&diff, "cache"), Status::Grew);
+    assert_eq!(diff.totals(LOGICAL).net(), 2);
+
+    let diff = run(old.clone(), absent.clone());
+    assert_eq!(status(&diff, "cache"), Status::Removed);
+    assert_eq!(diff.totals(LOGICAL).net(), -3);
+    let reverse = run(absent, old);
+    assert_eq!(status(&reverse, "cache"), Status::Added);
+    assert_eq!(reverse.totals(LOGICAL).net(), 3);
+}
+
+#[test]
+fn a_file_namesake_of_an_excluded_directory_is_outside_the_shared_area() {
+    let mut file = Builder::fs("/data");
+    file.file(0, "cache", 3);
+    let file = with_exclusion(file.build(), "cache", false);
+    let mut full = Builder::fs("/data");
+    let dir = full.dir(0, "cache");
+    full.file(dir, "payload", 11);
+    let full = full.build();
+    let skipped = with_exclusion(Builder::fs("/data").build(), "cache", true);
+
+    for other in [full, skipped] {
+        for (old, new) in [(&file, &other), (&other, &file)] {
+            let diff = run(old.clone(), new.clone());
+            assert_eq!(diff.nodes.len(), 1);
+            assert_eq!(diff.totals(LOGICAL).net(), 0);
+        }
+    }
+}
+
+#[test]
+fn whole_folder_change_overlapping_an_exclusion_is_refused_even_after_confirmation() {
+    let mut legacy = Builder::fs("/data");
+    legacy.v1 = true;
+    let packages = legacy.dir(0, "packages");
+    let cache = legacy.dir(packages, "cache");
+    legacy.file(cache, "ignore.bin", 512);
+    let legacy = Arc::new(legacy.build());
+
+    for replaced in [false, true] {
+        let mut new = Builder::fs("/data");
+        if replaced {
+            new.file(0, "packages", 20);
+        }
+        let new = Arc::new(with_exclusion(new.build(), "packages/cache", false));
+        for (before, after) in [(&legacy, &new), (&new, &legacy)] {
+            let compare = |confirmed| {
+                compare::compare(
+                    before.clone(),
+                    after.clone(),
+                    confirmed,
+                    &AtomicBool::new(false),
+                )
+                .unwrap_err()
+            };
+            assert!(matches!(compare(false), CompareError::NeedsConfirmation(_)));
+            assert_eq!(compare(true), CompareError::ExclusionsOverlapChange);
+        }
+    }
+}
+
+#[test]
+fn a_legacy_tree_with_unmappable_paths_cannot_be_compared_with_exclusions() {
+    let mut legacy = Builder::fs("/data");
+    legacy.v1 = true;
+    legacy.file(0, "folder/file.bin", 30); // Not an immediate child in the native path.
+    let new = with_exclusion(Builder::fs("/data").build(), "folder", false);
+    let err = compare::compare(
+        Arc::new(legacy.build()),
+        Arc::new(new),
+        true,
+        &AtomicBool::new(false),
+    )
+    .unwrap_err();
+    assert_eq!(err, CompareError::ExclusionsCannotAlign);
+}
+
 /// Photos, videos and a file that only exists later, spread over three folders.
 fn growth_fixture() -> (scan::ScanResult, scan::ScanResult) {
     let mut old = Builder::fs("/data");

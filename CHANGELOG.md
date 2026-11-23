@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add exact root-relative folder exclusions to desktop scans. Show skipped
+  folders and save the rules in JSON. Comparisons use the shared area and
+  report when an excluded path prevents a whole-folder change from being measured.
+
 ## v0.3.4 — 2026-11-21
 
 - Show observed hard-link paths and filesystem link counts in file details for local Unix desktop scans. The index uses the scan memory budget, and sizes still count each path separately.

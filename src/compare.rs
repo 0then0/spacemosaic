@@ -10,7 +10,7 @@
 //! added together.
 use crate::{
     import::{Encoding, encoding},
-    scan::{Kind, Measure, ScanResult, ScopeIdentity, SourceKind},
+    scan::{Kind, Measure, NativeExclusions, ScanResult, ScopeIdentity, SourceKind},
 };
 use std::{
     collections::VecDeque,
@@ -266,6 +266,8 @@ pub enum Limitation {
     OlderSchema,
     ScopeConfirmedByUser,
     VolumeNotVerified,
+    SharedExclusions,
+    DifferentExclusions,
 }
 impl Limitation {
     pub const fn key(self) -> &'static str {
@@ -277,9 +279,24 @@ impl Limitation {
             Self::OlderSchema => "cmp_limit_older_schema",
             Self::ScopeConfirmedByUser => "cmp_limit_user_confirmed",
             Self::VolumeNotVerified => "cmp_scope_volume_unverified",
+            Self::SharedExclusions => "cmp_shared_exclusions",
+            Self::DifferentExclusions => "cmp_different_exclusions",
         }
     }
 }
+
+pub fn exclusion_limitation(baseline: &ScanResult, current: &ScanResult) -> Option<Limitation> {
+    let old = baseline.exclusions.iter().map(|rule| &rule.path);
+    let new = current.exclusions.iter().map(|rule| &rule.path);
+    if old.ne(new) {
+        Some(Limitation::DifferentExclusions)
+    } else if !baseline.exclusions.is_empty() {
+        Some(Limitation::SharedExclusions)
+    } else {
+        None
+    }
+}
+
 pub fn is_partial(result: &ScanResult) -> bool {
     result.cancelled || result.limited || !result.nodes[0].complete
 }
@@ -402,6 +419,10 @@ pub enum CompareError {
     TooLarge,
     /// The estimated indexes and diff exceed the memory allowance given to the call.
     MemoryLimit,
+    /// The recorded paths cannot be mapped to normalized folder exclusions.
+    ExclusionsCannotAlign,
+    /// An indivisible folder event would include a subtree outside the common area.
+    ExclusionsOverlapChange,
 }
 
 /// Children of each node as contiguous ranges; avoids a `Vec` per directory.
@@ -486,6 +507,61 @@ fn child_key(result: &ScanResult, mode: Encoding, parent: usize, child: usize) -
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Coverage {
+    Included,
+    Excluded,
+    ContainsExcluded,
+}
+
+fn exclusion_coverage(
+    result: &ScanResult,
+    paths: &NativeExclusions,
+    cancel: &AtomicBool,
+) -> Result<Vec<Coverage>, CompareError> {
+    let mut coverage = Vec::new();
+    coverage
+        .try_reserve_exact(result.nodes.len())
+        .map_err(|_| CompareError::MemoryLimit)?;
+    coverage.resize(result.nodes.len(), Coverage::Included);
+    let root = &result.nodes[0].native_locator;
+    for (index, node) in result.nodes.iter().enumerate().skip(1) {
+        if index.is_multiple_of(CHECK_INTERVAL) && cancel.load(Ordering::Relaxed) {
+            return Err(CompareError::Cancelled);
+        }
+        let parent = node.parent.expect("child parent");
+        if coverage[parent] == Coverage::Excluded {
+            coverage[index] = Coverage::Excluded;
+        } else {
+            if !paths.is_direct_child(&result.nodes[parent].native_locator, &node.native_locator) {
+                return Err(CompareError::ExclusionsCannotAlign);
+            }
+            if paths
+                .matching_rule(root, &node.native_locator)
+                .is_some_and(|skipped| {
+                    skipped || node.kind == Kind::Directory || node.error.is_some()
+                })
+            {
+                coverage[index] = Coverage::Excluded;
+            }
+        }
+    }
+    // Mark aggregates that include any bytes from an excluded path. A matched
+    // directory can sum events below it, but an indivisible event uses its aggregate.
+    for index in (1..coverage.len()).rev() {
+        if index.is_multiple_of(CHECK_INTERVAL) && cancel.load(Ordering::Relaxed) {
+            return Err(CompareError::Cancelled);
+        }
+        if coverage[index] != Coverage::Included {
+            let parent = result.nodes[index].parent.expect("child parent");
+            if coverage[parent] == Coverage::Included {
+                coverage[parent] = Coverage::ContainsExcluded;
+            }
+        }
+    }
+    Ok(coverage)
+}
+
 const CHECK_INTERVAL: usize = 1024;
 
 /// Per diff row, the interface's row list (`u32`) and a possible folder-tree
@@ -562,7 +638,46 @@ pub fn compare_within(
         return Err(CompareError::TooLarge);
     }
     let (old, new) = (&*baseline, &*current);
-    let index = Children::bytes(old.nodes.len()).saturating_add(Children::bytes(new.nodes.len()));
+    let mode = {
+        let (a, b) = (
+            encoding(&old.nodes[0].native_locator),
+            encoding(&new.nodes[0].native_locator),
+        );
+        if a == b { a } else { Encoding::Opaque }
+    };
+    let upper_rows = old.nodes.len() + new.nodes.len();
+    let (old_coverage, new_coverage) = if exclusion_limitation(old, new).is_some() {
+        if mode == Encoding::Opaque {
+            return Err(CompareError::ExclusionsCannotAlign);
+        }
+        let rules = || old.exclusions.iter().chain(&new.exclusions);
+        let bytes = NativeExclusions::estimated_bytes(rules())
+            .saturating_add(upper_rows.saturating_mul(size_of::<Coverage>()));
+        if bytes > limit {
+            return Err(CompareError::MemoryLimit);
+        }
+        let paths = NativeExclusions::new(mode == Encoding::Windows, rules());
+        (
+            exclusion_coverage(old, &paths, cancel)?,
+            exclusion_coverage(new, &paths, cancel)?,
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let overlaps_exclusions = |old: Option<u32>, new: Option<u32>| {
+        old.and_then(|i| old_coverage.get(i as usize)) == Some(&Coverage::ContainsExcluded)
+            || new.and_then(|i| new_coverage.get(i as usize)) == Some(&Coverage::ContainsExcluded)
+    };
+    let has_exclusions = !old_coverage.is_empty();
+    let root_form = pair_form(old.nodes[0].kind, new.nodes[0].kind);
+    if root_form == Form::TypeChanged && overlaps_exclusions(Some(0), Some(0)) {
+        return Err(CompareError::ExclusionsOverlapChange);
+    }
+    let index = Children::bytes(old.nodes.len())
+        .saturating_add(Children::bytes(new.nodes.len()))
+        .saturating_add(
+            size_of::<Coverage>() * (old_coverage.capacity() + new_coverage.capacity()),
+        );
     if index > limit {
         return Err(CompareError::MemoryLimit);
     }
@@ -570,7 +685,6 @@ pub fn compare_within(
         return Err(CompareError::MemoryLimit);
     };
     // Every row stands for at least one object of either result.
-    let upper_rows = old.nodes.len() + new.nodes.len();
     let keys = old_children
         .widest
         .saturating_add(new_children.widest)
@@ -584,16 +698,8 @@ pub fn compare_within(
     if fixed > limit {
         return Err(CompareError::MemoryLimit);
     }
-    let mode = {
-        let (a, b) = (
-            encoding(&old.nodes[0].native_locator),
-            encoding(&new.nodes[0].native_locator),
-        );
-        if a == b { a } else { Encoding::Opaque }
-    };
     let mut nodes: Vec<DiffNode> = Vec::new();
     reserve_rows(&mut nodes, 1, upper_rows, fixed, limit)?;
-    let root_form = pair_form(old.nodes[0].kind, new.nodes[0].kind);
     nodes.push(DiffNode {
         old: Some(0),
         new: Some(0),
@@ -636,14 +742,23 @@ pub fn compare_within(
             .collect();
         old_keys.sort_unstable();
         new_keys.sort_unstable();
-        let needed = nodes.len() + old_keys.len() + new_keys.len();
-        reserve_rows(&mut nodes, needed, upper_rows, fixed, limit)?;
+        if !has_exclusions {
+            let needed = nodes.len() + old_keys.len() + new_keys.len();
+            reserve_rows(&mut nodes, needed, upper_rows, fixed, limit)?;
+        }
         let first = nodes.len() as u32;
         let push = |nodes: &mut Vec<DiffNode>,
                     old: Option<u32>,
                     new: Option<u32>,
                     form: Form,
-                    coverage: Reason| {
+                    coverage: Reason|
+         -> Result<u32, CompareError> {
+            if matches!(form, Form::OldOnly | Form::NewOnly | Form::TypeChanged)
+                && coverage == Reason::None
+                && overlaps_exclusions(old, new)
+            {
+                return Err(CompareError::ExclusionsOverlapChange);
+            }
             nodes.push(DiffNode {
                 old,
                 new,
@@ -659,7 +774,7 @@ pub fn compare_within(
                 unknown: [0; 2],
                 mask: [0; 2],
             });
-            nodes.len() as u32 - 1
+            Ok(nodes.len() as u32 - 1)
         };
         let (mut i, mut j) = (0, 0);
         while i < old_keys.len() || j < new_keys.len() {
@@ -675,10 +790,27 @@ pub fn compare_within(
             let a_end = i + old_keys[i..].iter().take_while(|k| k.0 == key).count();
             let b_end = j + new_keys[j..].iter().take_while(|k| k.0 == key).count();
             let (a_count, b_count) = (a_end - i, b_end - j);
+            if has_exclusions {
+                // A directory outside the shared scope can have the same name
+                // as a file on the other side. Omit the entire name group.
+                if old_keys[i..a_end]
+                    .iter()
+                    .any(|&(_, c)| old_coverage[c as usize] == Coverage::Excluded)
+                    || new_keys[j..b_end]
+                        .iter()
+                        .any(|&(_, c)| new_coverage[c as usize] == Coverage::Excluded)
+                {
+                    i = a_end;
+                    j = b_end;
+                    continue;
+                }
+                let needed = nodes.len() + a_count + b_count;
+                reserve_rows(&mut nodes, needed, upper_rows, fixed, limit)?;
+            }
             if a_count == 1 && b_count == 1 {
                 let (oc, nc) = (old_keys[i].1, new_keys[j].1);
                 let form = pair_form(old.nodes[oc as usize].kind, new.nodes[nc as usize].kind);
-                let child = push(&mut nodes, Some(oc), Some(nc), form, Reason::None);
+                let child = push(&mut nodes, Some(oc), Some(nc), form, Reason::None)?;
                 if form == Form::Container {
                     queue.push_back(child);
                 }
@@ -691,7 +823,7 @@ pub fn compare_within(
                         None,
                         Form::Ambiguous,
                         Reason::AmbiguousName,
-                    );
+                    )?;
                 }
                 for &(_, nc) in &new_keys[j..b_end] {
                     push(
@@ -700,7 +832,7 @@ pub fn compare_within(
                         Some(nc),
                         Form::Ambiguous,
                         Reason::AmbiguousName,
-                    );
+                    )?;
                 }
             } else if a_count > 0 {
                 let coverage = if new_listed {
@@ -709,7 +841,7 @@ pub fn compare_within(
                     Reason::CurrentNotObserved
                 };
                 for &(_, oc) in &old_keys[i..a_end] {
-                    push(&mut nodes, Some(oc), None, Form::OldOnly, coverage);
+                    push(&mut nodes, Some(oc), None, Form::OldOnly, coverage)?;
                 }
             } else {
                 let coverage = if old_listed {
@@ -718,7 +850,7 @@ pub fn compare_within(
                     Reason::BaselineNotObserved
                 };
                 for &(_, nc) in &new_keys[j..b_end] {
-                    push(&mut nodes, None, Some(nc), Form::NewOnly, coverage);
+                    push(&mut nodes, None, Some(nc), Form::NewOnly, coverage)?;
                 }
             }
             i = a_end;
@@ -730,7 +862,13 @@ pub fn compare_within(
         entry.child_count = count;
         entry.own_unknown = !old_listed || !new_listed;
     }
-    drop((old_children, new_children, queue));
+    drop((
+        old_children,
+        new_children,
+        queue,
+        old_coverage,
+        new_coverage,
+    ));
     // The row list and folder tree that browse the diff are built from it later.
     let kept = nodes
         .capacity()
@@ -751,6 +889,7 @@ pub fn compare_within(
         totals(&nodes, old, new, Dimension::Allocated),
     ];
     let mut limitations = Vec::new();
+    limitations.extend(exclusion_limitation(old, new));
     if is_partial(old) {
         limitations.push(Limitation::BaselinePartial);
     }

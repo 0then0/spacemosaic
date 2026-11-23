@@ -55,7 +55,7 @@ fn node(parent: Option<usize>, path: &str, kind: Kind, size: u64) -> Node {
 
 fn result(nodes: Vec<Node>) -> ScanResult {
     ScanResult {
-        schema_version: scan::SCHEMA_VERSION,
+        schema_version: scan::UNFILTERED_SCHEMA_VERSION,
         started_unix_seconds: 1_790_000_000,
         elapsed_millis: 1,
         scope: "/data".into(),
@@ -74,6 +74,7 @@ fn result(nodes: Vec<Node>) -> ScanResult {
         }),
         app_version: Some("benchmark".into()),
         hard_link_groups: None,
+        exclusions: Vec::new(),
         nodes,
     }
 }
